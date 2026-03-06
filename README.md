@@ -53,6 +53,16 @@ export ENABLE_RELEVANCE_SCORING=1
 export ENABLE_RELEVANCE_SCORING=0
 ```
 
+### Spot-check harness (acceptance evidence)
+
+```bash
+python tests/relevance_spotcheck.py
+```
+
+Expected outputs include:
+- `avg_precision` (target >= 0.80)
+- `routine_false_positive_reduction` (target > 0)
+
 ## Notes
 - **Respect robots.txt** and rate-limit requests. This starter uses conservative defaults.
 - CivicClerk/Diligent portals are JavaScript-heavy. Playwright is included and used only when required.
