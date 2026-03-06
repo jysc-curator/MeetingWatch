@@ -146,6 +146,11 @@ def _meeting_id_from_event_url(u: str) -> Optional[str]:
 def _stream_fileid_from_url(u: str) -> Optional[str]:
     if not u:
         return None
+    # API stream format: GetMeetingFileStream(fileId=5957,plainText=false)
+    m = STREAM_FILEID_RE.search(u)
+    if m:
+        return m.group(1)
+    # Query-string fallback: ...?fileId=5957
     m = STREAM_FILEID_QS_RE.search(u)
     return m.group(1) if m else None
 
