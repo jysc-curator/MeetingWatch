@@ -27,6 +27,32 @@ This repo sets up a small pipeline that scrapes the specified municipal sites, s
    ```
    Then open `frontend/index.html` in a local web server or commit and deploy.
    
+## Ranking & Filtering Controls (Issue #3)
+
+The summarizer supports configurable relevance controls without changing code:
+
+- `CITY_SUMMARY_TERM_OVERRIDES_JSON` — per-city keep/drop term overrides
+- `ENABLE_RELEVANCE_SCORING` — feature toggle for ranking behavior (`1` = on, `0` = rollback to original order)
+
+### Example: city-level keep/drop overrides
+
+```bash
+export CITY_SUMMARY_TERM_OVERRIDES_JSON='{
+  "Pueblo": {"keep": ["urban renewal", "special district"], "drop": ["proclamation", "ceremonial"]},
+  "Colorado Springs": {"keep": ["annexation"], "drop": ["recognition"]}
+}'
+```
+
+### Rollback toggle
+
+```bash
+# default is enabled
+export ENABLE_RELEVANCE_SCORING=1
+
+# quick rollback path (preserve original order after routine filtering)
+export ENABLE_RELEVANCE_SCORING=0
+```
+
 ## Notes
 - **Respect robots.txt** and rate-limit requests. This starter uses conservative defaults.
 - CivicClerk/Diligent portals are JavaScript-heavy. Playwright is included and used only when required.
