@@ -90,6 +90,38 @@ def _parse_date(text: str) -> Optional[str]:
     except Exception:
         return None
 
+def _extract_start_time(text: str) -> Optional[str]:
+    if not text:
+        return None
+    m = re.search(r"\b(\d{1,2}:\d{2}\s*(?:AM|PM))\b", text, re.I)
+    if not m:
+        return None
+    return m.group(1).upper().replace('  ', ' ').strip()
+
+
+def _normalize_meeting_type(raw: str) -> str:
+    t = _clean(raw or '')
+    if not t:
+        return 'Meeting'
+
+    # Remove known metadata tails that bloat header display
+    t = re.split(r"Agenda Posted on:", t, flags=re.I)[0].strip()
+    t = re.split(r"\b(?:City Hall Place|Pueblo, Colo|Pueblo, Colorado)\b", t, flags=re.I)[0].strip()
+
+    # Prefer concise council meeting labels when present
+    m = re.search(r"\b(?:City\s+)?Council(?:\s+(?:Regular|Special|Work\s*Session|Study\s*Session))?\s+Meeting\b", t, re.I)
+    if m:
+        return _clean(m.group(0)).title().replace('Work Session', 'Work Session').replace('Study Session', 'Study Session')[:80]
+
+    # Remove leading weekday/date/time noise
+    t = re.sub(r"^(?:Mon|Monday|Tue|Tues|Tuesday|Wed|Wednesday|Thu|Thur|Thursday|Fri|Friday|Sat|Saturday|Sun|Sunday)?\s*"
+               r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s*\d{1,2},\s*\d{4}\s*"
+               r"(?:\d{1,2}:\d{2}\s*(?:AM|PM)\s*(?:MDT|MST|CDT|CST)?)?",
+               '', t, flags=re.I).strip(' -:•')
+
+    return (t[:80] or 'Meeting')
+
+
 def _normalize(base: str, href: str) -> str:
     return urljoin(base if base.endswith('/') else base + '/', (href or '').lstrip('/'))
 
@@ -160,9 +192,9 @@ def _scan_tiles_bs4(soup: BeautifulSoup, source_url: str) -> List[Dict]:
 
         meeting = make_meeting(
             city_or_body=CITY_NAME,
-            meeting_type=title[:150],
+            meeting_type=_normalize_meeting_type(title),
             date=iso or "",
-            start_time_local=None,
+            start_time_local=_extract_start_time(title),
             status="Scheduled",
             location=None,
             agenda_url=None,
@@ -273,9 +305,9 @@ def _playwright_candidates(entry_url: str) -> List[Dict]:
                 seen.add(url)
                 meeting = make_meeting(
                     city_or_body=CITY_NAME,
-                    meeting_type=(txt or "Meeting")[:150] or "Meeting",
+                    meeting_type=_normalize_meeting_type(txt or "Meeting"),
                     date=_parse_date(txt) or "",
-                    start_time_local=None,
+                    start_time_local=_extract_start_time(txt or ""),
                     status="Scheduled",
                     location=None,
                     agenda_url=None,
@@ -306,9 +338,9 @@ def _playwright_candidates(entry_url: str) -> List[Dict]:
                                     full = _normalize(full, "files")
                                 meeting = make_meeting(
                                     city_or_body=CITY_NAME,
-                                    meeting_type=(text or "Meeting")[:150],
+                                    meeting_type=_normalize_meeting_type(text or "Meeting"),
                                     date=_parse_date(text) or "",
-                                    start_time_local=None,
+                                    start_time_local=_extract_start_time(text or ""),
                                     status="Scheduled",
                                     location=None,
                                     agenda_url=None,
