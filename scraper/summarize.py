@@ -149,17 +149,44 @@ def _is_metadata_duplicate_bullet(text: str, meeting: Dict[str, Any]) -> bool:
     return not bool(substantive)
 
 
+
+_HIGH_SIGNAL_PATTERNS = [
+    re.compile(p, re.I)
+    for p in [
+        r"\b(ordinance|resolution|contract|agreement|procurement|bid|award)\b",
+        r"\b(budget|appropriation|funding|grant|fee|tax|bond)\b",
+        r"\b(zoning|rezoning|land use|annexation|variance|plat)\b",
+        r"\b(public hearing|hearing|appeal|litigation|settlement)\b",
+        r"\b(policy|code amendment|amendment|intergovernmental)\b",
+    ]
+]
+
+
+def _relevance_score(bullet: str) -> int:
+    t = (bullet or '').strip().lower()
+    if not t:
+        return -999
+    score = 0
+    for rx in _HIGH_SIGNAL_PATTERNS:
+        if rx.search(t):
+            score += 3
+    if len(t) >= 45:
+        score += 1
+    if len(t) > 220:
+        score -= 1
+    return score
+
 def _partition_summary_bullets(
     bullets: List[str], meeting: Dict[str, Any], max_bullets: int = MAX_BULLETS
 ) -> Tuple[List[str], List[str]]:
-    kept: List[str] = []
+    kept_candidates: List[Tuple[int, int, str]] = []
     filtered_routine: List[str] = []
     seen = set()
 
     city = str(meeting.get("city") or meeting.get("city_or_body") or "").strip()
     keep_terms, drop_terms = _city_term_override(city)
 
-    for raw in bullets:
+    for i, raw in enumerate(bullets):
         b = _strip_leading_bullet(raw)
         if not b:
             continue
@@ -180,10 +207,13 @@ def _partition_summary_bullets(
             filtered_routine.append(b)
             continue
 
-        kept.append(b)
-        if len(kept) >= max_bullets:
-            break
+        score = _relevance_score(b)
+        if forced_keep:
+            score += 10
+        kept_candidates.append((score, i, b))
 
+    kept_candidates.sort(key=lambda t: (-t[0], t[1]))
+    kept = [b for _, _, b in kept_candidates[:max_bullets]]
     return kept, filtered_routine
 
 
