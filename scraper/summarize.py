@@ -105,10 +105,15 @@ def _is_metadata_duplicate_bullet(text: str, meeting: Dict[str, Any]) -> bool:
     time = str(meeting.get("start_time_local") or meeting.get("start_time") or meeting.get("time") or "").strip().lower()
     location = str(meeting.get("location") or "").strip().lower()
 
+    # Avoid false positives from very short location strings (e.g., "Ce").
+    location_match = False
+    if location and len(location) >= 4:
+        location_match = location in t
+
     looks_like_metadata = (
         (date and date in t)
         or (time and time in t)
-        or (location and location in t)
+        or location_match
         or bool(re.search(r"\b(meeting (will )?be held|located at|at \d{1,2}:\d{2})\b", t))
     )
 
