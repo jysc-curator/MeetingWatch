@@ -397,14 +397,20 @@ jobs:
               const when = (function(w){ return w ? '🕒 ' + w : ''; })(formatWhen(m));
               return [city, agenda, source, type, when].filter(Boolean).join('  •  ');
             }
-            function supportingDocsHTML(m){
-              const docs = Array.isArray(m.supporting_documents) ? m.supporting_documents : [];
+            function _normWords(s){
+              return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length >= 4);
+            }
+            function _docLinksForBullet(bullet, docs){
+              const words = new Set(_normWords(bullet));
+              const matches = docs.filter(d => {
+                const titleWords = _normWords(d.title || '');
+                return titleWords.some(w => words.has(w));
+              });
+              return matches;
+            }
+            function supportingDocsUnmatchedHTML(docs){
               if (!docs.length) return '';
-              const links = docs
-                .filter(d => d && d.url)
-                .map(d => '<li><a href="'+d.url+'" target="_blank" rel="noopener">'+(d.title || 'Document')+'</a></li>')
-                .join('');
-              if (!links) return '';
+              const links = docs.map(d => '<li><a href="'+d.url+'" target="_blank" rel="noopener">'+(d.title || 'Document')+'</a></li>').join('');
               return '<div class="meta" style="margin-top:.45rem"><strong>Supporting documents</strong></div><ul>'+links+'</ul>';
             }
             function bulletsHTML(m, showRoutine){
@@ -412,8 +418,22 @@ jobs:
                          : (typeof m.agenda_summary === 'string' ? m.agenda_summary.split(/\\n+/).filter(Boolean) : []);
               const routine = Array.isArray(m.agenda_summary_routine) ? m.agenda_summary_routine
                             : (typeof m.agenda_summary_routine === 'string' ? m.agenda_summary_routine.split(/\\n+/).filter(Boolean) : []);
-              const keepHtml = keep.length ? '<ul>' + keep.map(b => '<li>'+b+'</li>').join('') + '</ul>' : '';
-              const docsHtml = supportingDocsHTML(m);
+              const docs = (Array.isArray(m.supporting_documents) ? m.supporting_documents : []).filter(d => d && d.url);
+
+              const usedDocUrls = new Set();
+              const keepItems = keep.map(b => {
+                const linked = _docLinksForBullet(b, docs).filter(d => !usedDocUrls.has(d.url));
+                linked.forEach(d => usedDocUrls.add(d.url));
+                const linksHtml = linked.length
+                  ? '<ul style="margin-top:.3rem">' + linked.map(d => '<li><a href="'+d.url+'" target="_blank" rel="noopener">'+(d.title || 'Document')+'</a></li>').join('') + '</ul>'
+                  : '';
+                return '<li>'+b+linksHtml+'</li>';
+              });
+
+              const keepHtml = keepItems.length ? '<ul>' + keepItems.join('') + '</ul>' : '';
+              const unmatchedDocs = docs.filter(d => !usedDocUrls.has(d.url));
+              const docsHtml = supportingDocsUnmatchedHTML(unmatchedDocs);
+
               if (!showRoutine || !routine.length) return keepHtml + docsHtml;
               const routineHtml = '<details style="margin-top:.4rem"><summary style="cursor:pointer;color:#666">Routine items ('+routine.length+')</summary><ul style="color:#666">' + routine.map(b => '<li>'+b+'</li>').join('') + '</ul></details>';
               return keepHtml + routineHtml + docsHtml;
