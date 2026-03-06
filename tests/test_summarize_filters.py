@@ -1,5 +1,6 @@
 import unittest
 
+import scraper.summarize as summarize
 from scraper.summarize import _clean_summary_bullets, _partition_summary_bullets
 
 
@@ -79,6 +80,34 @@ class TestSummaryFiltering(unittest.TestCase):
         kept, routine = _partition_summary_bullets(bullets, meeting, max_bullets=10)
         self.assertEqual(len(kept), 1)
         self.assertEqual(routine, [])
+
+    def test_relevance_scoring_prioritizes_high_signal_when_truncated(self):
+        meeting = {"date": "2026-03-10", "start_time_local": "6:00 PM", "location": "City Hall"}
+        bullets = [
+            "General announcements and recognitions.",
+            "Approve ordinance for downtown zoning amendment and budget appropriation.",
+        ]
+        prev = summarize.ENABLE_RELEVANCE_SCORING
+        summarize.ENABLE_RELEVANCE_SCORING = True
+        try:
+            kept, _ = _partition_summary_bullets(bullets, meeting, max_bullets=1)
+        finally:
+            summarize.ENABLE_RELEVANCE_SCORING = prev
+        self.assertEqual(kept, ["Approve ordinance for downtown zoning amendment and budget appropriation."])
+
+    def test_rollback_toggle_preserves_input_order(self):
+        meeting = {"date": "2026-03-10", "start_time_local": "6:00 PM", "location": "City Hall"}
+        bullets = [
+            "General announcements and recognitions.",
+            "Approve ordinance for downtown zoning amendment and budget appropriation.",
+        ]
+        prev = summarize.ENABLE_RELEVANCE_SCORING
+        summarize.ENABLE_RELEVANCE_SCORING = False
+        try:
+            kept, _ = _partition_summary_bullets(bullets, meeting, max_bullets=1)
+        finally:
+            summarize.ENABLE_RELEVANCE_SCORING = prev
+        self.assertEqual(kept, ["General announcements and recognitions."])
 
 
 if __name__ == "__main__":

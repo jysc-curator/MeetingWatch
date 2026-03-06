@@ -39,6 +39,8 @@ try:
 except Exception:
     CITY_SUMMARY_TERM_OVERRIDES = {}
 
+ENABLE_RELEVANCE_SCORING = os.getenv("ENABLE_RELEVANCE_SCORING", "1") == "1"
+
 
 def _city_term_override(city: str) -> Tuple[List[str], List[str]]:
     cfg = CITY_SUMMARY_TERM_OVERRIDES.get(city) if isinstance(CITY_SUMMARY_TERM_OVERRIDES, dict) else None
@@ -212,7 +214,10 @@ def _partition_summary_bullets(
             score += 10
         kept_candidates.append((score, i, b))
 
-    kept_candidates.sort(key=lambda t: (-t[0], t[1]))
+    if ENABLE_RELEVANCE_SCORING:
+        kept_candidates.sort(key=lambda t: (-t[0], t[1]))
+    else:
+        kept_candidates.sort(key=lambda t: t[1])
     kept = [b for _, _, b in kept_candidates[:max_bullets]]
     return kept, filtered_routine
 
