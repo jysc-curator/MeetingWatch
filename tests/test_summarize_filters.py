@@ -71,6 +71,15 @@ class TestSummaryFiltering(unittest.TestCase):
         self.assertEqual(kept, ["A resolution to approve a housing grant will be considered."])
         self.assertEqual(routine, ["Public Comments"])
 
+    def test_short_location_does_not_trigger_metadata_false_positive(self):
+        meeting = {"date": "2026-03-10", "start_time_local": "9:00 AM", "location": "Ce"}
+        bullets = [
+            "Approval of a Purchase Order to Tyler Technologies for annual maintenance totaling $150,623.42.",
+        ]
+        kept, routine = _partition_summary_bullets(bullets, meeting, max_bullets=10)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(routine, [])
+
 
 if __name__ == "__main__":
     unittest.main()
