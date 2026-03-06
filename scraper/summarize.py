@@ -28,6 +28,27 @@ UA = {"User-Agent": "MeetingWatch/1.0 (+https://github.com/human83/MeetingWatch)
 # Utilities
 # ---------------------------
 
+# Optional city-level term overrides (JSON string):
+# {
+#   "Pueblo": {"keep": ["urban renewal"], "drop": ["proclamation"]},
+#   "Colorado Springs": {"keep": ["annexation"], "drop": ["ceremonial"]}
+# }
+_CITY_TERM_OVERRIDES_RAW = os.getenv("CITY_SUMMARY_TERM_OVERRIDES_JSON", "").strip()
+try:
+    CITY_SUMMARY_TERM_OVERRIDES = json.loads(_CITY_TERM_OVERRIDES_RAW) if _CITY_TERM_OVERRIDES_RAW else {}
+except Exception:
+    CITY_SUMMARY_TERM_OVERRIDES = {}
+
+
+def _city_term_override(city: str) -> Tuple[List[str], List[str]]:
+    cfg = CITY_SUMMARY_TERM_OVERRIDES.get(city) if isinstance(CITY_SUMMARY_TERM_OVERRIDES, dict) else None
+    if not isinstance(cfg, dict):
+        return [], []
+    keep = [str(x).strip().lower() for x in (cfg.get("keep") or []) if str(x).strip()]
+    drop = [str(x).strip().lower() for x in (cfg.get("drop") or []) if str(x).strip()]
+    return keep, drop
+
+
 def _log(msg: str) -> None:
     print(f"[summarize] {msg}", flush=True)
 
@@ -135,6 +156,9 @@ def _partition_summary_bullets(
     filtered_routine: List[str] = []
     seen = set()
 
+    city = str(meeting.get("city") or meeting.get("city_or_body") or "").strip()
+    keep_terms, drop_terms = _city_term_override(city)
+
     for raw in bullets:
         b = _strip_leading_bullet(raw)
         if not b:
@@ -145,7 +169,14 @@ def _partition_summary_bullets(
             continue
         seen.add(key)
 
-        if _is_boilerplate_bullet(b) or _is_metadata_duplicate_bullet(b, meeting):
+        forced_keep = any(t in key for t in keep_terms) if keep_terms else False
+        forced_drop = any(t in key for t in drop_terms) if drop_terms else False
+
+        if forced_drop and not forced_keep:
+            filtered_routine.append(b)
+            continue
+
+        if (not forced_keep) and (_is_boilerplate_bullet(b) or _is_metadata_duplicate_bullet(b, meeting)):
             filtered_routine.append(b)
             continue
 
