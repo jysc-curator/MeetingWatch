@@ -152,6 +152,16 @@ def _is_metadata_duplicate_bullet(text: str, meeting: Dict[str, Any]) -> bool:
 
 
 
+
+_LOW_SIGNAL_PATTERNS = [
+    re.compile(p, re.I)
+    for p in [
+        r"\b(general announcements?|recognitions?|ceremonial|proclamation)\b",
+        r"\b(public comments?|call to order|consent calendar|approval of minutes|adjourn(ment)?)\b",
+        r"\b(meeting logistics|channel information|broadcast|facebook live)\b",
+    ]
+]
+
 _HIGH_SIGNAL_PATTERNS = [
     re.compile(p, re.I)
     for p in [
@@ -172,6 +182,9 @@ def _relevance_score(bullet: str) -> int:
     for rx in _HIGH_SIGNAL_PATTERNS:
         if rx.search(t):
             score += 3
+    for rx in _LOW_SIGNAL_PATTERNS:
+        if rx.search(t):
+            score -= 4
     if len(t) >= 45:
         score += 1
     if len(t) > 220:
@@ -212,6 +225,9 @@ def _partition_summary_bullets(
         score = _relevance_score(b)
         if forced_keep:
             score += 10
+        if (not forced_keep) and score <= 0:
+            filtered_routine.append(b)
+            continue
         kept_candidates.append((score, i, b))
 
     if ENABLE_RELEVANCE_SCORING:
