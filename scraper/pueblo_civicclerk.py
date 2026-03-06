@@ -142,6 +142,23 @@ def _meeting_id_from_event_url(u: str) -> Optional[str]:
     m = re.search(r"/event/(\d+)", urlparse(u).path or "")
     return m.group(1) if m else None
 
+
+def _stream_fileid_from_url(u: str) -> Optional[str]:
+    if not u:
+        return None
+    m = STREAM_FILEID_QS_RE.search(u)
+    return m.group(1) if m else None
+
+
+def _agenda_view_url_for_event_file(meeting_url: str, file_id: str) -> Optional[str]:
+    if not meeting_url or not file_id:
+        return None
+    parsed = urlparse(meeting_url)
+    event_id = _meeting_id_from_event_url(meeting_url)
+    if not parsed.scheme or not parsed.netloc or not event_id:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}/event/{event_id}/files/agenda/{file_id}"
+
 LIKELY_TILE_SEL = "[role='link'], a.meeting, .meeting, .tile, .card, article, li, .Row, .ListItem"
 LIKELY_TIME_CHILDREN = "time[datetime], time, .meeting-date, .date, [data-date], [data-start]"
 PRI_WORDS = ("meeting", "agenda", "packet", "council", "board", "commission")
@@ -360,6 +377,7 @@ def _playwright_candidates(entry_url: str) -> List[Dict]:
 
 FILE_HREF_RE = re.compile(r"/files/(?:agenda|packet)/(\d+)", re.I)
 STREAM_FILEID_RE = re.compile(r"GetMeetingFileStream\(fileId=(\d+)", re.I)
+STREAM_FILEID_QS_RE = re.compile(r"[?&]fileId=(\d+)", re.I)
 
 def _extract_fileids_from_html(html_text: str) -> List[str]:
     ids = list(dict.fromkeys(FILE_HREF_RE.findall(html_text or "")))
@@ -693,9 +711,11 @@ def parse_pueblo() -> List[Dict]:
         pdf, txt, supporting_docs = find_agenda_assets(u)
         if pdf:
             m["agenda_url"] = pdf
-            # UX: CivicClerk stream URLs may force download; prefer opening meeting page in browser tab.
+            # UX: prefer deep viewer link for agenda file when we can derive eventId + fileId.
             if "GetMeetingFileStream" in pdf and u:
-                m["agenda_view_url"] = u
+                fid = _stream_fileid_from_url(pdf)
+                deep = _agenda_view_url_for_event_file(u, fid or "")
+                m["agenda_view_url"] = deep or u
             summary = summarize_pdf_if_any(pdf)
             if summary:
                 m["agenda_summary"] = summary
