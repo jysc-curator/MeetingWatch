@@ -54,6 +54,80 @@ def _strip_leading_bullet(s: str) -> str:
     # remove any leading bullet-like marker and surrounding spaces
     return _BULLET_PREFIX_RE.sub("", s or "").strip()
 
+_BOILERPLATE_PATTERNS = [
+    re.compile(p, re.I)
+    for p in [
+        r"\bpledge of allegiance\b",
+        r"\bcall to order\b",
+        r"\broll call\b",
+        r"\bapproval of (the )?(agenda|minutes)\b",
+        r"\bminutes of (the )?(previous|last) meeting\b",
+        r"\bpublic comment(s)?\b",
+        r"\badjourn(ment)?\b",
+        r"\bconsent calendar\b",
+    ]
+]
+
+
+def _is_boilerplate_bullet(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    return any(rx.search(t) for rx in _BOILERPLATE_PATTERNS)
+
+
+def _is_metadata_duplicate_bullet(text: str, meeting: Dict[str, Any]) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+
+    date = str(meeting.get("date") or meeting.get("meeting_date") or "").strip().lower()
+    time = str(meeting.get("start_time_local") or meeting.get("start_time") or meeting.get("time") or "").strip().lower()
+    location = str(meeting.get("location") or "").strip().lower()
+
+    looks_like_metadata = (
+        (date and date in t)
+        or (time and time in t)
+        or (location and location in t)
+        or bool(re.search(r"\b(meeting (will )?be held|located at|at \d{1,2}:\d{2})\b", t))
+    )
+
+    if not looks_like_metadata:
+        return False
+
+    # Keep content that also contains clear substantive action terms.
+    substantive = re.search(
+        r"\b(ordinance|resolution|contract|budget|hearing|vote|amend|zoning|bid|award|funding)\b",
+        t,
+    )
+    return not bool(substantive)
+
+
+def _clean_summary_bullets(bullets: List[str], meeting: Dict[str, Any], max_bullets: int = MAX_BULLETS) -> List[str]:
+    cleaned: List[str] = []
+    seen = set()
+    for raw in bullets:
+        b = _strip_leading_bullet(raw)
+        if not b:
+            continue
+
+        key = re.sub(r"\s+", " ", b).strip().lower()
+        if key in seen:
+            continue
+
+        if _is_boilerplate_bullet(b):
+            continue
+
+        if _is_metadata_duplicate_bullet(b, meeting):
+            continue
+
+        seen.add(key)
+        cleaned.append(b)
+        if len(cleaned) >= max_bullets:
+            break
+
+    return cleaned
+
 # ---------------------------
 # PDF text extraction (prefer project helper if present)
 # ---------------------------
@@ -281,15 +355,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         }
         _write_meta(out_dir, slug, meta)
 
-        # --- NEW: merge bullets back into meetings.json for BOTH 'text' and 'pdf' ---
+        # merge cleaned bullets back into meetings.json for BOTH 'text' and 'pdf'
         if res.ok and res.bullets and res.used_kind in {"text", "pdf"}:
-            cleaned = [_strip_leading_bullet(b) for b in res.bullets if b and b.strip()]
+            cleaned = _clean_summary_bullets(res.bullets, m, max_bullets=MAX_BULLETS)
             m["agenda_summary"] = cleaned
             m["agenda_summary_source"] = res.used_kind
             m["agenda_summary_chars"] = res.chars
             merged += 1
             if DEBUG:
-                _log(f"✓ {slug}: merged {len(res.bullets)} bullets ({res.used_kind})")
+                _log(f"✓ {slug}: merged {len(cleaned)}/{len(res.bullets)} bullets ({res.used_kind})")
         else:
             if DEBUG:
                 _log(f"✗ {slug}: {res.reason}")
