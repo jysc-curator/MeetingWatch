@@ -379,6 +379,13 @@ def _file_weight(label: str) -> int:
         score += 3
     return score
 
+
+def _is_primary_agenda_label(label: str) -> bool:
+    t = (label or "").lower()
+    if "minutes" in t:
+        return False
+    return ("agenda" in t) or ("packet" in t)
+
 def _ensure_files_url(u: str) -> str:
     parsed = urlparse(u)
     m = re.search(r"^(/event/\d+)(?:/|$)", parsed.path or "", re.I)
@@ -535,19 +542,45 @@ def _collect_file_candidates_with_playwright(files_url: str) -> List[Tuple[int, 
             ranked.append((w, fid))
     return ranked
 
-def find_agenda_pdf(source_url: str) -> Tuple[Optional[str], Optional[str]]:
+def find_agenda_assets(source_url: str) -> Tuple[Optional[str], Optional[str], List[Dict[str, str]]]:
     files_url = _ensure_files_url(source_url)
     api_base = _api_base_from_portal(files_url)
 
     api_files = _api_list_files(files_url)
     if api_files:
         api_files.sort(key=lambda f: _file_weight(f.get("label") or ""), reverse=True)
-        fid = api_files[0]["fileId"]
+
+        primary = None
+        for f in api_files:
+            if _is_primary_agenda_label(f.get("label") or ""):
+                primary = f
+                break
+        if primary is None:
+            primary = api_files[0]
+
+        fid = primary["fileId"]
         pdf = f"{api_base}/v1/Meetings/GetMeetingFileStream(fileId={fid},plainText=false)"
         txt = f"{api_base}/v1/Meetings/GetMeetingFileStream(fileId={fid},plainText=true)"
+
+        supporting_documents: List[Dict[str, str]] = []
+        seen = set()
+        for f in api_files:
+            other_id = f.get("fileId")
+            if not other_id or other_id == fid:
+                continue
+            label = (f.get("label") or "Supporting document").strip()
+            if "minutes" in label.lower():
+                continue
+            other_pdf = f"{api_base}/v1/Meetings/GetMeetingFileStream(fileId={other_id},plainText=false)"
+            key = (label.lower(), other_pdf)
+            if key in seen:
+                continue
+            seen.add(key)
+            supporting_documents.append({"title": label[:140], "url": other_pdf})
+
         if PUEBLO_DEBUG:
             print(f"[pueblo] API agenda fileId={fid} -> {pdf}")
-        return pdf, txt
+        return pdf, txt, supporting_documents
 
     try:
         cands = _collect_file_candidates_with_playwright(files_url)
@@ -560,7 +593,7 @@ def find_agenda_pdf(source_url: str) -> Tuple[Optional[str], Optional[str]]:
         txt = f"{api_base}/v1/Meetings/GetMeetingFileStream(fileId={fid},plainText=true)"
         if PUEBLO_DEBUG:
             print(f"[pueblo] PW agenda fileId={fid} -> {pdf}")
-        return pdf, txt
+        return pdf, txt, []
 
     cands = _collect_file_candidates_requests(files_url)
     if cands:
@@ -569,11 +602,11 @@ def find_agenda_pdf(source_url: str) -> Tuple[Optional[str], Optional[str]]:
         txt = f"{api_base}/v1/Meetings/GetMeetingFileStream(fileId={fid},plainText=true)"
         if PUEBLO_DEBUG:
             print(f"[pueblo] HTML agenda fileId={fid} -> {pdf}")
-        return pdf, txt
+        return pdf, txt, []
 
     if PUEBLO_DEBUG:
         print(f"[pueblo] No agenda fileIds on {files_url}")
-    return None, None
+    return None, None, []
 
 def _hosts_to_try() -> Iterable[str]:
     tried = [PORTAL_BASE] + ALT_HOSTS
@@ -657,7 +690,7 @@ def parse_pueblo() -> List[Dict]:
                 m["agenda_summary"] = summary
             continue
 
-        pdf, txt = find_agenda_pdf(u)
+        pdf, txt, supporting_docs = find_agenda_assets(u)
         if pdf:
             m["agenda_url"] = pdf
             summary = summarize_pdf_if_any(pdf)
@@ -665,6 +698,8 @@ def parse_pueblo() -> List[Dict]:
                 m["agenda_summary"] = summary
         if txt:
             m["agenda_text_url"] = txt
+        if supporting_docs:
+            m["supporting_documents"] = supporting_docs
 
     with_pdf = sum(1 for x in unique if x.get('agenda_url'))
     print(f"[pueblo] Visited {len(tried_urls)} entry url(s); accepted {len(unique)} items; with agenda: {with_pdf}")
