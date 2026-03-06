@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "cities": [
+    {
+      "city": "Example County",
+      "platform": "agendasuite",
+      "timezone": "America/Denver",
+      "source_url": "https://example.com",
+      "parser_template": "agendasuite",
+      "enabled": false,
+      "approval_ticket": "APPROVE: city-example-county"
+    }
+  ]
+}
