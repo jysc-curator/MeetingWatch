@@ -65,6 +65,21 @@ _BOILERPLATE_PATTERNS = [
         r"\bpublic comment(s)?\b",
         r"\badjourn(ment)?\b",
         r"\bconsent calendar\b",
+        r"\bagenda items? are subject to change\b",
+        r"\bsubject to change in order and timing\b",
+        r"\bsubmit comments? on agenda items? via email\b",
+        r"\bmeeting will be broadcast live\b",
+        r"\bchannel\s*18\b",
+        r"\bfacebook live\b",
+        r"\bauxiliary aids\b",
+        r"\brequest (them|accommodations?) at least\s*\d+\s*hours in advance\b",
+        r"\binvocation\b",
+        r"\bagenda will be reviewed and approved\b",
+        r"\baddendum (to the )?agenda\b",
+        r"\bdepartment and committee reports?\b",
+        r"\bnon-action items?\b",
+        r"\bcouncilmembers? .*open discussion\b",
+        r"\belected officials? will provide comments\b",
     ]
 ]
 
