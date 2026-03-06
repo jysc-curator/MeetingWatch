@@ -289,6 +289,17 @@ jobs:
                   for b in bullets:
                       parts.append(f'<li>{b}</li>')
                   parts.append('</ul>')
+
+              docs = m.get('supporting_documents') or []
+              if isinstance(docs, list) and docs:
+                  parts.append('<div class="meta" style="margin-top:.45rem"><strong>Supporting documents</strong></div>')
+                  parts.append('<ul>')
+                  for d in docs:
+                      if isinstance(d, dict) and d.get('url'):
+                          t = html.escape(str(d.get('title') or 'Document'))
+                          u = html.escape(str(d.get('url')))
+                          parts.append(f'<li><a href="{u}" target="_blank" rel="noopener">{t}</a></li>')
+                  parts.append('</ul>')
               parts.append('</div>')
           
           parts.append('</div>')  # /#static-list
@@ -386,15 +397,26 @@ jobs:
               const when = (function(w){ return w ? '🕒 ' + w : ''; })(formatWhen(m));
               return [city, agenda, source, type, when].filter(Boolean).join('  •  ');
             }
+            function supportingDocsHTML(m){
+              const docs = Array.isArray(m.supporting_documents) ? m.supporting_documents : [];
+              if (!docs.length) return '';
+              const links = docs
+                .filter(d => d && d.url)
+                .map(d => '<li><a href="'+d.url+'" target="_blank" rel="noopener">'+(d.title || 'Document')+'</a></li>')
+                .join('');
+              if (!links) return '';
+              return '<div class="meta" style="margin-top:.45rem"><strong>Supporting documents</strong></div><ul>'+links+'</ul>';
+            }
             function bulletsHTML(m, showRoutine){
               const keep = Array.isArray(m.agenda_summary) ? m.agenda_summary
                          : (typeof m.agenda_summary === 'string' ? m.agenda_summary.split(/\\n+/).filter(Boolean) : []);
               const routine = Array.isArray(m.agenda_summary_routine) ? m.agenda_summary_routine
                             : (typeof m.agenda_summary_routine === 'string' ? m.agenda_summary_routine.split(/\\n+/).filter(Boolean) : []);
               const keepHtml = keep.length ? '<ul>' + keep.map(b => '<li>'+b+'</li>').join('') + '</ul>' : '';
-              if (!showRoutine || !routine.length) return keepHtml;
+              const docsHtml = supportingDocsHTML(m);
+              if (!showRoutine || !routine.length) return keepHtml + docsHtml;
               const routineHtml = '<details style="margin-top:.4rem"><summary style="cursor:pointer;color:#666">Routine items ('+routine.length+')</summary><ul style="color:#666">' + routine.map(b => '<li>'+b+'</li>').join('') + '</ul></details>';
-              return keepHtml + routineHtml;
+              return keepHtml + routineHtml + docsHtml;
             }
             function syncState(){
               const c = citySel.value, s = srcSel.value, showRoutine = routineToggle.checked;

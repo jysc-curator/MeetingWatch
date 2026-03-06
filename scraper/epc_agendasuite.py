@@ -101,6 +101,37 @@ def _find_agenda_href(soup: BeautifulSoup) -> Optional[str]:
     return None
 
 
+def _extract_supporting_documents(soup: BeautifulSoup, agenda_href: Optional[str]) -> List[Dict[str, str]]:
+    docs: List[Dict[str, str]] = []
+    seen = set()
+    agenda_abs = urljoin(BASE, agenda_href) if agenda_href else ''
+
+    for tr in soup.select("table tr"):
+        a = tr.find("a", href=True)
+        if not a:
+            continue
+        href = a.get("href") or ""
+        if "/file/getfile/" not in href:
+            continue
+        abs_url = urljoin(BASE, href)
+        if abs_url == agenda_abs:
+            continue
+
+        row_text = _text(tr)
+        if re.search(r"\bagenda\b", row_text, re.I):
+            continue
+
+        title = _text(a) or row_text or "Supporting document"
+        title = re.sub(r"\s+", " ", title).strip(" -:\t")[:140]
+        key = (title.lower(), abs_url)
+        if key in seen:
+            continue
+        seen.add(key)
+        docs.append({"title": title, "url": abs_url})
+
+    return docs
+
+
 def _meeting_title_from_detail(soup: BeautifulSoup) -> Optional[str]:
     # Try to use the big heading line that contains "Board of County Commissioners"
     # (and avoid "Work Session" variants).
@@ -128,11 +159,13 @@ def _extract_detail_info(detail_url: str) -> Dict[str, Optional[str]]:
     agenda_url = _find_agenda_href(soup)
     location = _find_location(soup)
     title = _meeting_title_from_detail(soup)
+    supporting_documents = _extract_supporting_documents(soup, agenda_url)
 
     return {
         "agenda_url": agenda_url,
         "location": location,
         "title": title,
+        "supporting_documents": supporting_documents,
     }
 
 
@@ -216,7 +249,8 @@ def parse_epc() -> List[Dict]:
                 summary = summarize_pdf_if_any(m["agenda_url"])
                 if summary:
                     m["agenda_summary"] = summary
-
+            if info.get("supporting_documents"):
+                m["supporting_documents"] = info["supporting_documents"]
 
             # Provide a consistent Mountain Time zone for downstream rendering if your pipeline uses it.
             m["tz"] = "America/Denver"
