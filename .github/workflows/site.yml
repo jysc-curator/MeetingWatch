@@ -241,6 +241,10 @@ jobs:
               <label><div style="font-weight:600;">Source</div>
                 <select id="sourceSelect"><option value="">All sources</option></select>
               </label>
+              <label style="display:flex;align-items:end;gap:.5rem;">
+                <input id="routineToggle" type="checkbox" />
+                <span style="font-weight:600;">Show routine items</span>
+              </label>
             </section>
             <ul id="results"></ul>
           ''')
@@ -302,6 +306,7 @@ jobs:
           
             const citySel = document.getElementById('citySelect');
             const srcSel  = document.getElementById('sourceSelect');
+            const routineToggle = document.getElementById('routineToggle');
             const results = document.getElementById('results');
             const staticList = document.getElementById('static-list');
           
@@ -344,6 +349,7 @@ jobs:
             const url = new URL(location.href);
             citySel.value = url.searchParams.get('city') ?? localStorage.getItem('mw_city') ?? '';
             srcSel.value  = url.searchParams.get('source') ?? localStorage.getItem('mw_source') ?? '';
+            routineToggle.checked = (url.searchParams.get('showRoutine') ?? localStorage.getItem('mw_showRoutine') ?? '0') === '1';
           
             function inferType(title=''){
               const t = String(title).toLowerCase();
@@ -370,24 +376,30 @@ jobs:
               const when = (function(w){ return w ? '🕒 ' + w : ''; })(formatWhen(m));
               return [city, agenda, source, type, when].filter(Boolean).join('  •  ');
             }
-            function bulletsHTML(m){
-              const arr = Array.isArray(m.agenda_summary) ? m.agenda_summary
+            function bulletsHTML(m, showRoutine){
+              const keep = Array.isArray(m.agenda_summary) ? m.agenda_summary
                          : (typeof m.agenda_summary === 'string' ? m.agenda_summary.split(/\\n+/).filter(Boolean) : []);
-              if (!arr.length) return '';
-              return '<ul>' + arr.map(b => '<li>'+b+'</li>').join('') + '</ul>';
+              const routine = Array.isArray(m.agenda_summary_routine) ? m.agenda_summary_routine
+                            : (typeof m.agenda_summary_routine === 'string' ? m.agenda_summary_routine.split(/\\n+/).filter(Boolean) : []);
+              const keepHtml = keep.length ? '<ul>' + keep.map(b => '<li>'+b+'</li>').join('') + '</ul>' : '';
+              if (!showRoutine || !routine.length) return keepHtml;
+              const routineHtml = '<details style="margin-top:.4rem"><summary style="cursor:pointer;color:#666">Routine items ('+routine.length+')</summary><ul style="color:#666">' + routine.map(b => '<li>'+b+'</li>').join('') + '</ul></details>';
+              return keepHtml + routineHtml;
             }
             function syncState(){
-              const c = citySel.value, s = srcSel.value;
+              const c = citySel.value, s = srcSel.value, showRoutine = routineToggle.checked;
               localStorage.setItem('mw_city', c);
               localStorage.setItem('mw_source', s);
+              localStorage.setItem('mw_showRoutine', showRoutine ? '1' : '0');
               const u = new URL(location.href);
               c ? u.searchParams.set('city', c) : u.searchParams.delete('city');
               s ? u.searchParams.set('source', s) : u.searchParams.delete('source');
+              showRoutine ? u.searchParams.set('showRoutine', '1') : u.searchParams.delete('showRoutine');
               history.replaceState({}, '', u);
             }
             function render(){
               syncState();
-              const c = citySel.value, s = srcSel.value;
+              const c = citySel.value, s = srcSel.value, showRoutine = routineToggle.checked;
               const filtered = items.filter(m =>
                 (!c || (m.city||'') === c) && (!s || (m.provider||'') === s)
               );
@@ -411,13 +423,14 @@ jobs:
                   <div class="meta" style="margin-bottom:.4rem;display:flex;flex-wrap:wrap;gap:.5rem .75rem;">
                     ${headerLine(m)}
                   </div>
-                  ${bulletsHTML(m)}
+                  ${bulletsHTML(m, showRoutine)}
                 `;
                 results.appendChild(li);
               }
             }
             citySel.addEventListener('change', render);
             srcSel.addEventListener('change', render);
+            routineToggle.addEventListener('change', render);
             render();
           })();
           </script>''')

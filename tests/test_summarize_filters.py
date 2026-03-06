@@ -1,6 +1,6 @@
 import unittest
 
-from scraper.summarize import _clean_summary_bullets
+from scraper.summarize import _clean_summary_bullets, _partition_summary_bullets
 
 
 class TestSummaryFiltering(unittest.TestCase):
@@ -48,6 +48,28 @@ class TestSummaryFiltering(unittest.TestCase):
         out = _clean_summary_bullets(bullets, meeting, max_bullets=10)
         self.assertIn("An executive session is scheduled to discuss confidential matters.", out)
         self.assertIn("The case discussed in executive session is Smith v. City, Case No. 2026CV12345.", out)
+
+    def test_drops_new_routine_patterns(self):
+        meeting = {"date": "2026-03-10", "start_time_local": "6:00 PM", "location": "City Hall"}
+        bullets = [
+            "The agenda includes a public forum for community input.",
+            "Changes to the agenda will be addressed at the beginning of the meeting.",
+            "Items under study will be discussed during the meeting.",
+            "Staff emergency items will be addressed at the start of the meeting.",
+            "A contract amendment for road reconstruction will be considered.",
+        ]
+        out = _clean_summary_bullets(bullets, meeting, max_bullets=10)
+        self.assertEqual(out, ["A contract amendment for road reconstruction will be considered."])
+
+    def test_partition_returns_routine_bucket(self):
+        meeting = {"date": "2026-03-10", "start_time_local": "6:00 PM", "location": "City Hall"}
+        bullets = [
+            "Public Comments",
+            "A resolution to approve a housing grant will be considered.",
+        ]
+        kept, routine = _partition_summary_bullets(bullets, meeting, max_bullets=10)
+        self.assertEqual(kept, ["A resolution to approve a housing grant will be considered."])
+        self.assertEqual(routine, ["Public Comments"])
 
 
 if __name__ == "__main__":

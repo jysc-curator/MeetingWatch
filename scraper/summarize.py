@@ -80,6 +80,11 @@ _BOILERPLATE_PATTERNS = [
         r"\bnon-action items?\b",
         r"\bcouncilmembers? .*open discussion\b",
         r"\belected officials? will provide comments\b",
+        r"\bagenda includes a public forum\b",
+        r"\bpublic forum for community input\b",
+        r"\bchanges? to the agenda will be addressed\b",
+        r"\bitems under study will be discussed\b",
+        r"\bstaff emergency items? will be addressed\b",
     ]
 ]
 
@@ -118,9 +123,13 @@ def _is_metadata_duplicate_bullet(text: str, meeting: Dict[str, Any]) -> bool:
     return not bool(substantive)
 
 
-def _clean_summary_bullets(bullets: List[str], meeting: Dict[str, Any], max_bullets: int = MAX_BULLETS) -> List[str]:
-    cleaned: List[str] = []
+def _partition_summary_bullets(
+    bullets: List[str], meeting: Dict[str, Any], max_bullets: int = MAX_BULLETS
+) -> Tuple[List[str], List[str]]:
+    kept: List[str] = []
+    filtered_routine: List[str] = []
     seen = set()
+
     for raw in bullets:
         b = _strip_leading_bullet(raw)
         if not b:
@@ -129,19 +138,22 @@ def _clean_summary_bullets(bullets: List[str], meeting: Dict[str, Any], max_bull
         key = re.sub(r"\s+", " ", b).strip().lower()
         if key in seen:
             continue
-
-        if _is_boilerplate_bullet(b):
-            continue
-
-        if _is_metadata_duplicate_bullet(b, meeting):
-            continue
-
         seen.add(key)
-        cleaned.append(b)
-        if len(cleaned) >= max_bullets:
+
+        if _is_boilerplate_bullet(b) or _is_metadata_duplicate_bullet(b, meeting):
+            filtered_routine.append(b)
+            continue
+
+        kept.append(b)
+        if len(kept) >= max_bullets:
             break
 
-    return cleaned
+    return kept, filtered_routine
+
+
+def _clean_summary_bullets(bullets: List[str], meeting: Dict[str, Any], max_bullets: int = MAX_BULLETS) -> List[str]:
+    kept, _ = _partition_summary_bullets(bullets, meeting, max_bullets=max_bullets)
+    return kept
 
 # ---------------------------
 # PDF text extraction (prefer project helper if present)
@@ -208,7 +220,11 @@ def llm_summarize(text: str, model: str = SUMMARIZER_MODEL, max_bullets: int = M
         from openai import OpenAI  # type: ignore
         client = OpenAI(api_key=api_key)
         prompt = textwrap.dedent(f"""
-        You are a city agenda summarizer. Read the following agenda text and extract the most notable items.
+        You are a city agenda summarizer for journalists. Extract only high-signal, newsworthy items.
+        Prioritize: ordinances/resolutions, contracts/procurements, budget/funding changes, zoning/land-use,
+        public hearings, litigation, appointments with impact, and policy changes.
+        Exclude routine procedural boilerplate such as: call to order, pledge, approval of minutes,
+        public comment instructions, meeting logistics/broadcast notes, and generic agenda housekeeping.
         Return up to {max_bullets} concise bullet points, each a single sentence.
 
         Agenda:
@@ -372,13 +388,16 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         # merge cleaned bullets back into meetings.json for BOTH 'text' and 'pdf'
         if res.ok and res.bullets and res.used_kind in {"text", "pdf"}:
-            cleaned = _clean_summary_bullets(res.bullets, m, max_bullets=MAX_BULLETS)
+            cleaned, routine = _partition_summary_bullets(res.bullets, m, max_bullets=MAX_BULLETS)
             m["agenda_summary"] = cleaned
+            m["agenda_summary_routine"] = routine
             m["agenda_summary_source"] = res.used_kind
             m["agenda_summary_chars"] = res.chars
             merged += 1
             if DEBUG:
-                _log(f"✓ {slug}: merged {len(cleaned)}/{len(res.bullets)} bullets ({res.used_kind})")
+                _log(
+                    f"✓ {slug}: merged {len(cleaned)}/{len(res.bullets)} bullets ({res.used_kind}); routine_filtered={len(routine)}"
+                )
         else:
             if DEBUG:
                 _log(f"✗ {slug}: {res.reason}")
