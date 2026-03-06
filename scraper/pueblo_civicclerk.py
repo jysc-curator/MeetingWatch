@@ -693,6 +693,9 @@ def parse_pueblo() -> List[Dict]:
         pdf, txt, supporting_docs = find_agenda_assets(u)
         if pdf:
             m["agenda_url"] = pdf
+            # UX: CivicClerk stream URLs may force download; prefer opening meeting page in browser tab.
+            if "GetMeetingFileStream" in pdf and u:
+                m["agenda_view_url"] = u
             summary = summarize_pdf_if_any(pdf)
             if summary:
                 m["agenda_summary"] = summary
