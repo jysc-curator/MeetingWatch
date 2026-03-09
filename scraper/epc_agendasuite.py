@@ -141,11 +141,17 @@ def _meeting_title_from_detail(soup: BeautifulSoup) -> Optional[str]:
         if ALLOW_TITLE_RE.search(t):
             texts.append(t)
     if texts:
-        # Prefer the shortest that still contains the phrase (usually "Board of County Commissioners" or "... Meeting")
+        # Prefer the shortest that still contains the phrase.
         texts.sort(key=len)
         t = texts[0]
         # Drop 'Work Session' etc if present.
         t = BLOCK_TITLE_RE.sub("", t).strip(" -—:")
+
+        # AgendaSuite detail pages can include header boilerplate in the same text node,
+        # e.g. "Board of County Commissioners Held at: ... Tuesday ... From ...".
+        # To keep cross-city cards consistent, normalize El Paso to a concise meeting type.
+        if ALLOW_TITLE_RE.search(t):
+            return "Board of County Commissioners"
         return t[:150]
 
     # Fallback
