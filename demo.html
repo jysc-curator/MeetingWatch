@@ -731,12 +731,27 @@
     if(mins!==null) d.setHours(Math.floor(mins/60), mins%60, 0, 0);
     return d.getTime();
   }
+  function isCurrentOrFuture(meet){
+    const d = parseDateOnly(meet?.date);
+    if(!d) return true;
+    const mins = parseTimeToMinutes(meet?.time);
+    const now = new Date();
+    // If time is known, require meeting datetime >= now.
+    if(mins!==null){
+      d.setHours(Math.floor(mins/60), mins%60, 0, 0);
+      return d.getTime() >= now.getTime();
+    }
+    // If time is unknown, keep meetings scheduled for today or later.
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0,0,0,0);
+    return d >= start;
+  }
+
   function isWithinDays(dateStr, days){
-    if(days==="all") return true;
     const d = parseDateOnly(dateStr);
     if(!d) return true;
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0,0,0,0);
+    if(days==="all") return d >= start;
     const end = new Date(start.getTime() + Number(days)*24*60*60*1000);
     return d >= start && d <= end;
   }
@@ -1172,6 +1187,8 @@
 
   function filteredMeetings(){
     let list = getScopeMeetings();
+    // Hard guardrail: index should only show current/future meetings.
+    list = list.filter(isCurrentOrFuture);
     list = list.filter(m=>isWithinDays(m.date, filters.rangeDays));
     if(filters.onlyAgenda) list = list.filter(hasAgenda);
     if(filters.onlyTranscript) list = list.filter(hasTranscript);
