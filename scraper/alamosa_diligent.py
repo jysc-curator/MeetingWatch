@@ -17,6 +17,60 @@ ALAMOSA_TZ = "America/Denver"
 WANTED_TYPES = ("CITY COUNCIL REGULAR MEETING", "CITY COUNCIL SPECIAL MEETING", "CITY COUNCIL WORK SESSION")
 
 
+def _parse_date_token(text: str) -> Optional[date]:
+    candidates = [
+        "%b %d %Y", "%b %d, %Y",
+        "%B %d %Y", "%B %d, %Y",
+    ]
+    for fmt in candidates:
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_sidebar_meeting_text(raw_text: str) -> Optional[Dict]:
+    """
+    Parse a non-linked sidebar meeting entry (agenda not yet posted) into a card.
+    """
+    txt = _norm_space(raw_text)
+    up = txt.upper()
+
+    mtg_type = None
+    for t in WANTED_TYPES:
+        if t in up:
+            mtg_type = t.title()
+            break
+    if not mtg_type:
+        return None
+
+    m = re.search(r"\b([A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4})\b", txt)
+    if not m:
+        return None
+    date_obj = _parse_date_token(m.group(1))
+    if not date_obj or date_obj < _today_denver():
+        return None
+
+    tm = re.search(r"\b(\d{1,2}:\d{2}\s*[AP]M)\b", txt, re.I)
+    time_str = _norm_space(tm.group(1)).upper() if tm else None
+
+    slug_type = re.sub(r"[^a-z0-9]+", "-", mtg_type.lower()).strip("-")
+    source = f"{PORTAL_URL}#nolink-{date_obj.isoformat()}-{slug_type}"
+
+    return make_meeting(
+        city_or_body="Alamosa",
+        meeting_type=mtg_type,
+        date=date_obj.isoformat(),
+        start_time_local=time_str,
+        status="Scheduled",
+        location=None,
+        agenda_url=None,
+        agenda_summary=[],
+        source=source,
+    )
+
+
 def _today_denver() -> date:
     return datetime.now(ZoneInfo(ALAMOSA_TZ)).date()
 
@@ -119,23 +173,39 @@ def parse_alamosa() -> List[Dict]:
             print(f"[alamosa] Navigating to {PORTAL_URL}")
             page.goto(PORTAL_URL, wait_until="networkidle")
 
-            link_selector = "#ctl00_UpcomingMeetings a.list-link, #ctl00_RecentMeetings a.list-link, #ctl00_TodaysMeetings a.list-link"
             page.wait_for_selector("#ctl00_RightSidebar", timeout=20000)
-            
-            meeting_links = page.locator(link_selector).all()
-            print(f"[alamosa] Found {len(meeting_links)} potential meeting links.")
-            
-            detail_urls = list(dict.fromkeys(
-                urljoin(page.url, link.get_attribute('href')) for link in meeting_links if link.get_attribute('href')
-            ))
-            
-            print(f"[alamosa] Found {len(detail_urls)} unique detail URLs to scrape.")
+
+            # Collect sidebar meeting entries from all buckets.
+            row_selector = "#ctl00_UpcomingMeetings li, #ctl00_RecentMeetings li, #ctl00_TodaysMeetings li"
+            rows = page.locator(row_selector).all()
+            print(f"[alamosa] Found {len(rows)} sidebar meeting row(s).")
+
+            detail_urls: List[str] = []
+            no_link_items: List[Dict] = []
+
+            for row in rows:
+                row_text = _norm_space(row.inner_text() or "")
+                if not row_text:
+                    continue
+
+                a = row.locator("a[href]").first
+                href = a.get_attribute("href") if a.count() > 0 else None
+                if href:
+                    detail_urls.append(urljoin(page.url, href))
+                else:
+                    parsed = _parse_sidebar_meeting_text(row_text)
+                    if parsed:
+                        no_link_items.append(parsed)
+
+            detail_urls = list(dict.fromkeys(detail_urls))
+            print(f"[alamosa] Found {len(detail_urls)} unique detail URL(s); {len(no_link_items)} no-link upcoming item(s).")
 
             for url in detail_urls:
-                # Pass the browser context to the parsing function
                 meeting_item = _parse_meeting_detail_page(context, url)
                 if meeting_item:
                     items.append(meeting_item)
+
+            items.extend(no_link_items)
 
         except Exception as e:
             print(f"[alamosa] A critical error occurred during main page scraping: {e}")
@@ -143,8 +213,26 @@ def parse_alamosa() -> List[Dict]:
             if browser.is_connected():
                 browser.close()
 
-    # Deduplicate by source URL
-    final_items = list({item['source']: item for item in items}.values())
+    # Deduplicate by meeting identity; prefer entries that have an agenda/source detail URL.
+    by_key: Dict[tuple, Dict] = {}
+    for item in items:
+        key = (
+            item.get("date") or "",
+            item.get("meeting_type") or "",
+            item.get("start_time_local") or "",
+        )
+        prev = by_key.get(key)
+        if not prev:
+            by_key[key] = item
+            continue
+        prev_has_agenda = bool(prev.get("agenda_url"))
+        curr_has_agenda = bool(item.get("agenda_url"))
+        if curr_has_agenda and not prev_has_agenda:
+            by_key[key] = item
+        elif (not prev.get("source") or "#nolink-" in str(prev.get("source"))) and item.get("source") and "#nolink-" not in str(item.get("source")):
+            by_key[key] = item
+
+    final_items = list(by_key.values())
     sorted_items = sorted(final_items, key=lambda d: (d.get("date") or "9999-12-31", d.get("meeting_type") or ""))
     
     print(f"[alamosa] produced {len(sorted_items)} item(s)")
