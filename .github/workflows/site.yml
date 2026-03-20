@@ -2,7 +2,8 @@ name: Scrape Build Deploy
 
 on:
   schedule:
-    - cron: "3,33 6,7,18,19 * * *"  # Denver midnight/noon across DST & Standard
+    # One trigger per target window; guard below tolerates delayed starts.
+    - cron: "3 6,7,18,19 * * *"  # Denver midnight/noon across DST & Standard
   workflow_dispatch:
   push:
     branches: [ main ]
@@ -43,14 +44,18 @@ jobs:
           echo "utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "denver=$(TZ=America/Denver date '+%Y-%m-%d %H:%M:%S %Z')"
         
-      - name: "Guard — only run at midnight/noon America/Denver"
+      - name: "Guard — run for midnight/noon windows (delay-tolerant, no double-run)"
         if: ${{ github.event_name == 'schedule' }}
         id: guard
         shell: bash
         run: |
           HOUR="$(TZ=America/Denver date +%H)"
-          echo "Local hour is $HOUR"
-          if [ "$HOUR" = "00" ] || [ "$HOUR" = "12" ]; then
+          MIN="$(TZ=America/Denver date +%M)"
+          echo "Local Denver time is ${HOUR}:${MIN}"
+
+          # Accept on-time target hours and common delayed starts up to the next hour.
+          # Midnight window: 00-01, Noon window: 12-13.
+          if [ "$HOUR" = "00" ] || [ "$HOUR" = "01" ] || [ "$HOUR" = "12" ] || [ "$HOUR" = "13" ]; then
             echo "continue=true" >> "$GITHUB_OUTPUT"
           else
             echo "continue=false" >> "$GITHUB_OUTPUT"
