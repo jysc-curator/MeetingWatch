@@ -186,7 +186,7 @@ jobs:
         run: |
           python - <<'PY'
           import json, html
-          from datetime import datetime
+          from datetime import datetime, timezone
           from pathlib import Path
           from zoneinfo import ZoneInfo
           
@@ -220,8 +220,10 @@ jobs:
           
           meetings = sorted(meetings, key=sort_key)
 
-          run_ts_mt = datetime.now(ZoneInfo('America/Denver')).strftime('%Y-%m-%d %I:%M %p %Z')
-          run_ts_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+          run_dt_utc = datetime.now(timezone.utc)
+          run_ts_mt = run_dt_utc.astimezone(ZoneInfo('America/Denver')).strftime('%Y-%m-%d %I:%M %p %Z')
+          run_ts_utc = run_dt_utc.strftime('%Y-%m-%d %H:%M UTC')
+          run_iso_utc = run_dt_utc.isoformat().replace('+00:00', 'Z')
           
           # ---------- HTML skeleton ----------
           parts = []
@@ -252,7 +254,7 @@ jobs:
           </style>''')
           
           parts.append('<h1>MeetingWatch</h1>')
-          parts.append(f'<div class="run-meta"><strong>Latest run:</strong> {html.escape(run_ts_mt)} ({html.escape(run_ts_utc)})</div>')
+          parts.append(f'<div class="run-meta" data-run-ts="{html.escape(run_iso_utc)}"><strong>Latest run:</strong> {html.escape(run_ts_mt)} ({html.escape(run_ts_utc)}) <span id="freshnessNote"></span></div>')
           parts.append('<p><a href="data/meetings.json">Download meetings.json</a></p>')
           
           # Controls + dynamic target
@@ -343,6 +345,25 @@ jobs:
             const routineToggle = document.getElementById('routineToggle');
             const results = document.getElementById('results');
             const staticList = document.getElementById('static-list');
+            const runMeta = document.querySelector('.run-meta');
+            const freshnessNote = document.getElementById('freshnessNote');
+
+            function relativeFreshness(isoTs){
+              const runMs = Date.parse(isoTs || '');
+              if (!Number.isFinite(runMs)) return '';
+              const deltaMin = Math.max(0, Math.floor((Date.now() - runMs) / 60000));
+              if (deltaMin < 1) return ' • updated just now';
+              if (deltaMin < 60) return ` • updated ${deltaMin} min ago`;
+              const hours = Math.floor(deltaMin / 60);
+              if (hours < 24) return ` • updated ${hours} hour${hours === 1 ? '' : 's'} ago`;
+              const days = Math.floor(hours / 24);
+              return ` • updated ${days} day${days === 1 ? '' : 's'} ago`;
+            }
+
+            function updateFreshness(){
+              if (!runMeta || !freshnessNote) return;
+              freshnessNote.textContent = relativeFreshness(runMeta.getAttribute('data-run-ts'));
+            }
           
             // --- Always show these cities, even if they have (0) meetings right now ---
             const KNOWN_CITIES = [
@@ -384,6 +405,7 @@ jobs:
             citySel.value = url.searchParams.get('city') ?? localStorage.getItem('mw_city') ?? '';
             srcSel.value  = url.searchParams.get('source') ?? localStorage.getItem('mw_source') ?? '';
             routineToggle.checked = (url.searchParams.get('showRoutine') ?? localStorage.getItem('mw_showRoutine') ?? '0') === '1';
+            updateFreshness();
           
             function inferType(title=''){
               const t = String(title).toLowerCase();
@@ -499,6 +521,7 @@ jobs:
             citySel.addEventListener('change', render);
             srcSel.addEventListener('change', render);
             routineToggle.addEventListener('change', render);
+            setInterval(updateFreshness, 60000);
             render();
           })();
           </script>''')
