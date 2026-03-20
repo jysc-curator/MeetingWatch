@@ -143,6 +143,29 @@ def _time_from_agenda_pdf(url: str, session: requests.Session) -> Optional[str]:
 def _is_wanted(body: str, mtg_type: str) -> bool:
     return "council" in (body or "").lower() or "council" in (mtg_type or "").lower()
 
+
+def _normalize_cs_meeting_type(ev: Dict) -> str:
+    """
+    Normalize Colorado Springs card meeting type to a stable user-facing label.
+
+    We only emit one of:
+      - "City Council Meeting"
+      - "City Council Work Session"
+
+    NOTE: Legistar's EventAgendaStatusName can be values like "Final" and should
+    never be used as the meeting type label.
+    """
+    candidates = [
+        ev.get("EventMeetingTypeName"),
+        ev.get("EventMeetingType"),
+        ev.get("EventTitle"),
+        ev.get("EventBodyName"),
+    ]
+    text = " ".join((c or "").strip() for c in candidates if c).lower()
+    if "work session" in text:
+        return "City Council Work Session"
+    return "City Council Meeting"
+
 # Boilerplate/headers we don't want as bullets
 _DROP_PATTERNS = [
     r"^city of colorado springs\b",
@@ -248,14 +271,14 @@ def parse_legistar() -> List[Dict]:
     meetings: List[Dict] = []
     for ev in items:
         body = (ev.get("EventBodyName") or "").strip()
-        mtg_type = (
+        mtg_type_raw = (
             ev.get("EventMeetingTypeName")
             or ev.get("EventMeetingType")
-            or ev.get("EventAgendaStatusName")
             or ""
         ).strip()
+        mtg_type = _normalize_cs_meeting_type(ev)
 
-        if not _is_wanted(body, mtg_type):
+        if not _is_wanted(body, mtg_type_raw):
             continue
 
         date_str = (ev.get("EventDate") or "").split("T")[0]
@@ -299,7 +322,7 @@ def parse_legistar() -> List[Dict]:
         meetings.append(
             make_meeting(
                 city_or_body="Colorado Springs — City Council",
-                meeting_type=mtg_type or "City Council Meeting",
+                meeting_type=mtg_type,
                 date=date_str,
                 start_time_local=start_time_local,
                 status="Scheduled",
