@@ -186,7 +186,9 @@ jobs:
         run: |
           python - <<'PY'
           import json, html
+          from datetime import datetime
           from pathlib import Path
+          from zoneinfo import ZoneInfo
           
           data_path = Path("data/meetings.json")
           out_dir   = Path("_site")
@@ -217,6 +219,9 @@ jobs:
               return (d, t)
           
           meetings = sorted(meetings, key=sort_key)
+
+          run_ts_mt = datetime.now(ZoneInfo('America/Denver')).strftime('%Y-%m-%d %I:%M %p %Z')
+          run_ts_utc = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
           
           # ---------- HTML skeleton ----------
           parts = []
@@ -227,6 +232,8 @@ jobs:
             h1{margin:0 0 .75rem;font-size:1.8rem;letter-spacing:-.01em;}
             .m{border:1px solid var(--line);background:var(--card);border-radius:14px;padding:16px;margin:0;box-shadow:0 1px 2px rgba(15,23,42,.04);}
             .meta{color:var(--muted);font-size:.9rem;line-height:1.4}
+            .run-meta{margin:.25rem 0 .9rem;color:var(--muted);font-size:.92rem}
+            .agenda-missing{color:#b91c1c;font-weight:600}
             ul{margin:.6rem 0 0 1.15rem;padding:0}
             li{margin:.28rem 0;max-width:72ch}
             a{color:var(--accent);text-decoration:none}
@@ -245,6 +252,7 @@ jobs:
           </style>''')
           
           parts.append('<h1>MeetingWatch</h1>')
+          parts.append(f'<div class="run-meta"><strong>Latest run:</strong> {html.escape(run_ts_mt)} ({html.escape(run_ts_utc)})</div>')
           parts.append('<p><a href="data/meetings.json">Download meetings.json</a></p>')
           
           # Controls + dynamic target
@@ -275,7 +283,7 @@ jobs:
               time  = html.escape(m.get('start_time_local') or m.get('start_time') or m.get('time') or '')
               loc   = html.escape(m.get('location') or '')
               agenda_url = m.get('agenda_view_url') or m.get('agenda_url') or m.get('agenda_pdf') or ''
-              agenda_link = f' &middot; <a href="{html.escape(agenda_url)}" target="_blank" rel="noopener">agenda</a>' if agenda_url else ''
+              agenda_link = f' &middot; <a href="{html.escape(agenda_url)}" target="_blank" rel="noopener">agenda</a>' if agenda_url else ' &middot; <span class="agenda-missing">Agenda not yet published</span>'
               source_url = m.get('source') or ''
               source_link = f' &middot; <a href="{html.escape(source_url)}">{html.escape(source_url)}</a>' if source_url else ''
           
@@ -397,7 +405,9 @@ jobs:
             function headerLine(m){
               const city = m.city ? '🏙️ ' + m.city : '';
               const agendaHref = (m.agenda_view_url || m.agenda_url || m.agenda_pdf || '');
-              const agenda = agendaHref ? '<a href="'+agendaHref+'" target="_blank" rel="noopener">📝 Agenda</a>' : '';
+              const agenda = agendaHref
+                ? '<a href="'+agendaHref+'" target="_blank" rel="noopener">📝 Agenda</a>'
+                : '<span class="agenda-missing">Agenda not yet published</span>';
               const source = m.source ? '<a href="'+m.source+'" target="_blank" rel="noopener">🌐 Source</a>' : '';
               const type = '📌 ' + (m.meeting_type || inferType(m.title||''));
               const when = (function(w){ return w ? '🕒 ' + w : ''; })(formatWhen(m));
