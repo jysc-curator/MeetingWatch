@@ -279,7 +279,7 @@ jobs:
           parts.append('<div id="static-list">')
           
           for m in meetings:
-              title = html.escape(m.get('title') or m.get('name') or 'Meeting')
+              city_title = html.escape(m.get('city') or m.get('city_or_body') or m.get('title') or m.get('name') or 'Meeting')
               date  = html.escape(m.get('date') or '')
               # keep your previous time fallbacks
               time  = html.escape(m.get('start_time_local') or m.get('start_time') or m.get('time') or '')
@@ -296,7 +296,7 @@ jobs:
           
               parts.append('<div class="m">')
               parts.append(f'<div class="meta"><strong>{date}</strong> {time}{agenda_link}{source_link}</div>')
-              parts.append(f'<h3 style="margin:.35rem 0 .4rem">{title}</h3>')
+              parts.append(f'<h3 style="margin:.35rem 0 .4rem">{city_title}</h3>')
               if loc:
                   parts.append(f'<div class="meta">{loc}</div>')
               if bullets:
@@ -424,8 +424,10 @@ jobs:
               if (t) return t + tz;
               return '';
             }
+            function cardTitle(m){
+              return m.city || m.city_or_body || m.title || 'Meeting';
+            }
             function headerLine(m){
-              const city = m.city ? '🏙️ ' + m.city : '';
               const agendaHref = (m.agenda_view_url || m.agenda_url || m.agenda_pdf || '');
               const agenda = agendaHref
                 ? '<a href="'+agendaHref+'" target="_blank" rel="noopener">📝 Agenda</a>'
@@ -433,7 +435,7 @@ jobs:
               const source = m.source ? '<a href="'+m.source+'" target="_blank" rel="noopener">🌐 Source</a>' : '';
               const type = '📌 ' + (m.meeting_type || inferType(m.title||''));
               const when = (function(w){ return w ? '🕒 ' + w : ''; })(formatWhen(m));
-              return [city, agenda, source, type, when].filter(Boolean).join('  •  ');
+              return [agenda, source, type, when].filter(Boolean).join('  •  ');
             }
             function _normWords(s){
               return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length >= 4);
@@ -508,7 +510,7 @@ jobs:
                 li.className = 'm';
                 li.innerHTML = `
                   <div style="font-weight:750;font-size:1.04rem;margin-bottom:.32rem;line-height:1.3;">
-                    <a href="${href}" target="_blank" rel="noopener">${(m.title||'Meeting')}</a>
+                    <a href="${href}" target="_blank" rel="noopener">${cardTitle(m)}</a>
                   </div>
                   <div class="meta" style="margin-bottom:.48rem;display:flex;flex-wrap:wrap;gap:.38rem .62rem;">
                     ${headerLine(m)}
