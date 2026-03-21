@@ -36,7 +36,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         
       - name: Cron heartbeat
         run: |
@@ -63,7 +63,7 @@ jobs:
 
       - name: Set up Python
         if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       
@@ -152,7 +152,7 @@ jobs:
 
       - name: Upload data artifact (data/)
         if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scrape-data
           path: data/
@@ -163,10 +163,10 @@ jobs:
     if: ${{ github.event_name != 'schedule' || needs.scrape.outputs.should_run == 'true' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download scrape data
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: scrape-data
           path: ./data
@@ -536,7 +536,7 @@ jobs:
           find _site -maxdepth 3 -type f -print
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: _site
 
