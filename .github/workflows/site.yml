@@ -225,7 +225,7 @@ jobs:
 
           def format_bullet_html(text):
               safe = html.escape(str(text or ""))
-              safe = _KEYWORD_RE.sub(lambda m: f"<strong style=\"font-weight:900 !important;background:#fef08a;color:#111827;border-radius:.18em;padding:0 .14em\">{m.group(0)}</strong>", safe)
+              safe = _KEYWORD_RE.sub(lambda m: f"<strong style=\"font-weight:900 !important;color:#111827\">{m.group(0)}</strong>", safe)
               safe = _MONEY_RE.sub(lambda m: f"<strong style=\"font-weight:800 !important;color:#15803d\">{m.group(0)}</strong>", safe)
               return safe
 
@@ -453,7 +453,7 @@ jobs:
             }
             function styleBulletText(text){
               let safe = escapeHtml(String(text || ''));
-              safe = safe.replace(/\\b(ordnance|ordinance|resolution|appeal|amendment)s?\\b/gi, '<strong style="font-weight:900 !important;background:#fef08a;color:#111827;border-radius:.18em;padding:0 .14em">$&</strong>');
+              safe = safe.replace(/\\b(ordnance|ordinance|resolution|appeal|amendment)s?\\b/gi, '<strong style="font-weight:900 !important;color:#111827">$&</strong>');
               safe = safe.replace(/(?:US\$\s*)?\$\s?\d[\d,]*(?:\.\d{2})?(?:\s*(?:million|billion|thousand|m|bn|k))?/gi, '<strong style="font-weight:800 !important;color:#15803d">$&</strong>');
               return safe;
             }
