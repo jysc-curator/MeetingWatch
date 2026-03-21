@@ -453,7 +453,7 @@ jobs:
             }
             function styleBulletText(text){
               let safe = escapeHtml(String(text || ''));
-              safe = safe.replace(/\b(ordnance|ordinance|resolution|appeal|amendment)s?\b/gi, '<strong style="font-weight:900 !important;background:#fef08a;color:#111827;border-radius:.18em;padding:0 .14em">$&</strong>');
+              safe = safe.replace(/\\b(ordnance|ordinance|resolution|appeal|amendment)s?\\b/gi, '<strong style="font-weight:900 !important;background:#fef08a;color:#111827;border-radius:.18em;padding:0 .14em">$&</strong>');
               safe = safe.replace(/(?:US\$\s*)?\$\s?\d[\d,]*(?:\.\d{2})?(?:\s*(?:million|billion|thousand|m|bn|k))?/gi, '<strong style="font-weight:800 !important;color:#15803d">$&</strong>');
               return safe;
             }
