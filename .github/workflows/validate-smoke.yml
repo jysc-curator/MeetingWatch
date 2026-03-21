@@ -19,8 +19,8 @@ jobs:
     steps:
       - name: Set target URLs
         run: |
-          echo "SITE_URL=https://human83.github.io/MeetingWatch/" >> $GITHUB_ENV
-          echo "JSON_URL=https://human83.github.io/MeetingWatch/data/meetings.json" >> $GITHUB_ENV
+          echo "SITE_URL=https://jysc-curator.github.io/MeetingWatch/" >> $GITHUB_ENV
+          echo "JSON_URL=https://jysc-curator.github.io/MeetingWatch/data/meetings.json" >> $GITHUB_ENV
 
       - name: Check homepage returns HTTP 200
         run: |
