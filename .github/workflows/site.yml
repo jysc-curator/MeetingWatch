@@ -185,7 +185,7 @@ jobs:
       - name: Generate index.html from data/meetings.json
         run: |
           python - <<'PY'
-          import json, html
+          import json, html, re
           from datetime import datetime, timezone
           from pathlib import Path
           from zoneinfo import ZoneInfo
@@ -219,6 +219,15 @@ jobs:
               return (d, t)
           
           meetings = sorted(meetings, key=sort_key)
+
+          _KEYWORD_RE = re.compile(r"\b(ordnance|ordinance|resolution|appeal|amendment)s?\b", re.I)
+          _MONEY_RE = re.compile(r"(?:US\$\s*)?\$\s?\d[\d,]*(?:\.\d{2})?(?:\s*(?:million|billion|thousand|m|bn|k))?", re.I)
+
+          def format_bullet_html(text):
+              safe = html.escape(str(text or ""))
+              safe = _KEYWORD_RE.sub(lambda m: f"<strong>{m.group(0)}</strong>", safe)
+              safe = _MONEY_RE.sub(lambda m: f"<strong style=\"color:#15803d\">{m.group(0)}</strong>", safe)
+              return safe
 
           run_dt_utc = datetime.now(timezone.utc)
           run_ts_mt = run_dt_utc.astimezone(ZoneInfo('America/Denver')).strftime('%Y-%m-%d %I:%M %p %Z')
@@ -292,7 +301,7 @@ jobs:
               bullets = m.get('agenda_summary') or []
               if isinstance(bullets, str):
                   bullets = [bullets]
-              bullets = [html.escape(str(b)) for b in bullets]
+              bullets = [format_bullet_html(b) for b in bullets]
           
               parts.append('<div class="m">')
               parts.append(f'<div class="meta"><strong>{date}</strong> {time}{agenda_link}{source_link}</div>')
@@ -437,6 +446,15 @@ jobs:
               const when = (function(w){ return w ? '🕒 ' + w : ''; })(formatWhen(m));
               return [agenda, source, type, when].filter(Boolean).join('  •  ');
             }
+            function escapeHtml(s){
+              return String(s || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+            }
+            function styleBulletText(text){
+              let safe = escapeHtml(String(text || ''));
+              safe = safe.replace(/\b(ordnance|ordinance|resolution|appeal|amendment)s?\b/gi, '<strong>$&</strong>');
+              safe = safe.replace(/(?:US\$\s*)?\$\s?\d[\d,]*(?:\.\d{2})?(?:\s*(?:million|billion|thousand|m|bn|k))?/gi, '<strong style="color:#15803d">$&</strong>');
+              return safe;
+            }
             function _normWords(s){
               return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length >= 4);
             }
@@ -467,7 +485,7 @@ jobs:
                 const linksHtml = linked.length
                   ? '<ul style="margin-top:.3rem">' + linked.map(d => '<li><a href="'+d.url+'" target="_blank" rel="noopener">'+(d.title || 'Document')+'</a></li>').join('') + '</ul>'
                   : '';
-                return '<li>'+b+linksHtml+'</li>';
+                return '<li>'+styleBulletText(b)+linksHtml+'</li>';
               });
 
               const keepHtml = keepItems.length ? '<ul>' + keepItems.join('') + '</ul>' : '';
@@ -475,7 +493,7 @@ jobs:
               const docsHtml = supportingDocsUnmatchedHTML(unmatchedDocs);
 
               if (!showRoutine || !routine.length) return keepHtml + docsHtml;
-              const routineHtml = '<details style="margin-top:.4rem"><summary style="cursor:pointer;color:#666">Routine items ('+routine.length+')</summary><ul style="color:#666">' + routine.map(b => '<li>'+b+'</li>').join('') + '</ul></details>';
+              const routineHtml = '<details style="margin-top:.4rem"><summary style="cursor:pointer;color:#666">Routine items ('+routine.length+')</summary><ul style="color:#666">' + routine.map(b => '<li>'+styleBulletText(b)+'</li>').join('') + '</ul></details>';
               return keepHtml + routineHtml + docsHtml;
             }
             function syncState(){
