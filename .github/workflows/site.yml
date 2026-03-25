@@ -166,7 +166,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Download scrape data
-        if: ${{ needs.scrape.outputs.should_run == 'true' }}
+        if: ${{ github.event_name != 'schedule' || needs.scrape.outputs.should_run == 'true' }}
         uses: actions/download-artifact@v8
         with:
           name: scrape-data
