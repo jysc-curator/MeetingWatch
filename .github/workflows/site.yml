@@ -172,11 +172,16 @@ jobs:
           name: scrape-data
           path: ./data
 
-      - name: Prepare placeholder data for no-op scheduled runs
+      - name: Preserve prior meetings data for no-op scheduled runs
         if: ${{ github.event_name == 'schedule' && needs.scrape.outputs.should_run != 'true' }}
         run: |
+          set -euo pipefail
           mkdir -p data
-          printf '[]\n' > data/meetings.json
+          curl -fsSL "https://jysc-curator.github.io/MeetingWatch/data/meetings.json" -o data/meetings.json || true
+
+          if [ ! -s data/meetings.json ]; then
+            echo '{"meetings": []}' > data/meetings.json
+          fi
 
       - name: Prepare static site
         run: |
