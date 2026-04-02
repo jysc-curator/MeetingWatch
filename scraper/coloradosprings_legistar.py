@@ -26,6 +26,7 @@ import logging
 
 import requests
 import pytz
+from bs4 import BeautifulSoup
 
 from .utils import make_meeting, clean_text, summarize_pdf_if_any
 
@@ -239,6 +240,59 @@ def _filter_bullets(bullets: List[str], *, limit: int = BULLET_LIMIT) -> List[st
             break
     return soft
 
+def _parse_calendar_fallback(today_date) -> List[Dict]:
+    """
+    Fallback scraper for Calendar.aspx rows, used when upcoming council events are not
+    exposed by the Legistar Web API (common when agendas are not yet published).
+    """
+    out: List[Dict] = []
+    url = "https://coloradosprings.legistar.com/Calendar.aspx"
+    try:
+      html = requests.get(url, headers={"User-Agent": UA}, timeout=30).text
+    except Exception as e:
+      _LOG.warning("Calendar fallback fetch failed: %s", e)
+      return out
+
+    soup = BeautifulSoup(html, "html.parser")
+    for tr in soup.find_all("tr"):
+      tds = tr.find_all("td")
+      if len(tds) < 5:
+        continue
+
+      dept = clean_text(tds[0].get_text(" ", strip=True))
+      if dept not in {"City Council", "City Council Work Session"}:
+        continue
+
+      date_text = clean_text(tds[1].get_text(" ", strip=True))
+      time_text = clean_text(tds[3].get_text(" ", strip=True)) or "Time TBD"
+      location_text = clean_text(tds[4].get_text(" ", strip=True)) or None
+
+      try:
+        parsed_date = datetime.strptime(date_text, "%m/%d/%Y").date()
+      except Exception:
+        continue
+
+      if parsed_date < today_date:
+        continue
+
+      mtg_type = "City Council Work Session" if "work session" in dept.lower() else "City Council Meeting"
+
+      out.append(
+        make_meeting(
+          city_or_body="Colorado Springs — City Council",
+          meeting_type=mtg_type,
+          date=parsed_date.isoformat(),
+          start_time_local=time_text,
+          status="Scheduled",
+          location=location_text,
+          agenda_url=None,
+          agenda_summary=[],
+          source=url,
+        )
+      )
+
+    return out
+
 # --- Main --------------------------------------------------------------------
 
 def parse_legistar() -> List[Dict]:
@@ -333,4 +387,24 @@ def parse_legistar() -> List[Dict]:
             )
         )
 
-    return meetings
+    # Fallback: include Calendar.aspx-only upcoming council events (often no agenda yet)
+    fallback_meetings = _parse_calendar_fallback(today)
+    meetings.extend(fallback_meetings)
+
+    # Deduplicate by city/body + meeting type + date + start time + location
+    deduped: List[Dict] = []
+    seen = set()
+    for m in meetings:
+        key = (
+            m.get("city_or_body"),
+            m.get("meeting_type"),
+            m.get("date"),
+            m.get("start_time_local"),
+            m.get("location"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(m)
+
+    return sorted(deduped, key=lambda x: (x.get("date") or "", x.get("start_time_local") or ""))
