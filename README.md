@@ -4,7 +4,8 @@ This repo sets up a small pipeline that scrapes the specified municipal sites, s
 
 ## What you get
 - **/scraper** — Python scrapers (Playwright for JS-heavy pages, pdfminer for agenda PDFs) + LLM summarizer.
-- **/data/meetings.json** — Generated output consumed by the webpage.
+- **/data/meetings.json** — Generated active (upcoming/current-day) meeting cards consumed by the webpage.
+- **/data/history.json** — Generated archive of expired meeting cards with automatic retention (default 60 days).
 - **/frontend/index.html** — Static webpage that renders future meetings + agenda highlights.
 - **GitHub Action** (`.github/workflows/scrape.yml`) — Runs on a schedule, commits updated JSON, and (optionally) triggers your Cloudflare Pages deploy.
 
