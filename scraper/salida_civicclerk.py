@@ -57,6 +57,13 @@ def _classify_salida_title(title: str) -> Optional[str]:
     return "City Council Meeting"
 
 
+def _normalize_salida_status(text: str) -> str:
+    t = (text or "").lower()
+    if "cancel" in t or "cancelled" in t or "canceled" in t:
+        return "Canceled"
+    return "Scheduled"
+
+
 CITY_NAME = "Salida"
 PROVIDER = "CivicClerk"
 
@@ -177,7 +184,7 @@ def _scan_tiles_bs4(soup: BeautifulSoup, source_url: str) -> List[Dict]:
             meeting_type=title[:150],
             date=iso or "",
             start_time_local=None,
-            status="Scheduled",
+            status=_normalize_salida_status(title),
             location=None,
             agenda_url=None,
             agenda_summary=[],
@@ -290,7 +297,7 @@ def _playwright_candidates(entry_url: str) -> List[Dict]:
                     meeting_type=(txt or "Meeting")[:150] or "Meeting",
                     date=_parse_date(txt) or "",
                     start_time_local=None,
-                    status="Scheduled",
+                    status=_normalize_salida_status(title),
                     location=None,
                     agenda_url=None,
                     agenda_summary=[],
@@ -323,7 +330,7 @@ def _playwright_candidates(entry_url: str) -> List[Dict]:
                                     meeting_type=(text or "Meeting")[:150],
                                     date=_parse_date(text) or "",
                                     start_time_local=None,
-                                    status="Scheduled",
+                                    status=_normalize_salida_status(title),
                                     location=None,
                                     agenda_url=None,
                                     agenda_summary=[],
