@@ -167,6 +167,30 @@ def _normalize_cs_meeting_type(ev: Dict) -> str:
         return "City Council Work Session"
     return "City Council Meeting"
 
+
+def _normalize_cs_status_from_event(ev: Dict) -> str:
+    """Infer a user-facing meeting status for card display."""
+    status_candidates = [
+        ev.get("EventStatusName"),
+        ev.get("EventAgendaStatusName"),
+        ev.get("EventMinutesStatusName"),
+        ev.get("EventTitle"),
+        ev.get("EventBodyName"),
+        ev.get("EventLocation"),
+    ]
+    text = " ".join((str(c or "")).strip() for c in status_candidates if c).lower()
+    if re.search(r"\bcancel(?:ed|led|lation)?\b", text):
+        return "Canceled"
+    return "Scheduled"
+
+
+def _normalize_cs_status_from_calendar_row(*, dept: str, location_text: str, row_text: str) -> str:
+    """Infer status from Calendar.aspx row text when API omits status fields."""
+    text = " ".join([dept or "", location_text or "", row_text or ""]).lower()
+    if re.search(r"\bcancel(?:ed|led|lation)?\b", text):
+        return "Canceled"
+    return "Scheduled"
+
 # Boilerplate/headers we don't want as bullets
 _DROP_PATTERNS = [
     r"^city of colorado springs\b",
@@ -266,6 +290,12 @@ def _parse_calendar_fallback(today_date) -> List[Dict]:
       date_text = clean_text(tds[1].get_text(" ", strip=True))
       time_text = clean_text(tds[3].get_text(" ", strip=True)) or "Time TBD"
       location_text = clean_text(tds[4].get_text(" ", strip=True)) or None
+      row_text = clean_text(tr.get_text(" ", strip=True))
+      status = _normalize_cs_status_from_calendar_row(
+          dept=dept,
+          location_text=location_text or "",
+          row_text=row_text,
+      )
 
       try:
         parsed_date = datetime.strptime(date_text, "%m/%d/%Y").date()
@@ -283,7 +313,7 @@ def _parse_calendar_fallback(today_date) -> List[Dict]:
           meeting_type=mtg_type,
           date=parsed_date.isoformat(),
           start_time_local=time_text,
-          status="Scheduled",
+          status=status,
           location=location_text,
           agenda_url=None,
           agenda_summary=[],
@@ -331,6 +361,7 @@ def parse_legistar() -> List[Dict]:
             or ""
         ).strip()
         mtg_type = _normalize_cs_meeting_type(ev)
+        status = _normalize_cs_status_from_event(ev)
 
         if not _is_wanted(body, mtg_type_raw):
             continue
@@ -379,7 +410,7 @@ def parse_legistar() -> List[Dict]:
                 meeting_type=mtg_type,
                 date=date_str,
                 start_time_local=start_time_local,
-                status="Scheduled",
+                status=status,
                 location=location,
                 agenda_url=agenda_url,
                 agenda_summary=summary,
