@@ -3,12 +3,6 @@ from datetime import datetime
 from pathlib import Path
 
 from .utils import now_mt
-from .coloradosprings_legistar import parse_legistar
-from .epc_agendasuite import parse_bocc
-from .pueblo_civicclerk import parse_pueblo
-from .trinidad_regular import parse_trinidad
-from .alamosa_diligent import parse_alamosa
-from .salida_civicclerk import parse_salida
 
 RETENTION_DAYS = 60
 
@@ -86,7 +80,53 @@ def _apply_retention(meetings: list[dict], cutoff):
     return kept
 
 
+def _preserve_upcoming_salida_on_scrape_gaps(
+    *,
+    new_active: list[dict],
+    previous_active: list[dict],
+    today,
+    horizon_days: int = 10,
+) -> list[dict]:
+    """
+    Keep near-term upcoming Salida meetings from previous active data if
+    a scrape gap causes Salida to disappear in a fresh run.
+    """
+    has_salida_new = any(str(m.get("city") or "").strip().lower() == "salida" for m in new_active)
+    if has_salida_new:
+        return new_active
+
+    new_keys = {_meeting_key(m) for m in new_active}
+    horizon = today.fromordinal(today.toordinal() + horizon_days)
+
+    carried = []
+    for m in previous_active:
+        city = str(m.get("city") or "").strip().lower()
+        if city != "salida":
+            continue
+        mdate = _parse_date(m.get("date"))
+        if mdate is None:
+            continue
+        if not (today <= mdate <= horizon):
+            continue
+        if _meeting_key(m) in new_keys:
+            continue
+        preserved = dict(m)
+        preserved["stale_from_previous_run"] = True
+        carried.append(preserved)
+
+    if carried:
+        return new_active + carried
+    return new_active
+
+
 def run():
+    from .coloradosprings_legistar import parse_legistar
+    from .epc_agendasuite import parse_bocc
+    from .pueblo_civicclerk import parse_pueblo
+    from .trinidad_regular import parse_trinidad
+    from .alamosa_diligent import parse_alamosa
+    from .salida_civicclerk import parse_salida
+
     meetings = []
     try:
         meetings.extend(parse_legistar())
@@ -127,6 +167,12 @@ def run():
 
     active_from_new, expired_from_new = _split_active_and_expired(meetings, today_mt)
     _, expired_from_previous = _split_active_and_expired(previous_active, today_mt)
+
+    active_from_new = _preserve_upcoming_salida_on_scrape_gaps(
+        new_active=active_from_new,
+        previous_active=previous_active,
+        today=today_mt,
+    )
 
     history_combined = existing_history + expired_from_previous + expired_from_new
     history_deduped = _dedupe_keep_latest(history_combined)

@@ -457,8 +457,11 @@ jobs:
                 : '<span class="agenda-missing">Agenda not yet published</span>';
               const source = m.source ? '<a href="'+m.source+'" target="_blank" rel="noopener">🌐 Source</a>' : '';
               const type = '📌 ' + (m.meeting_type || inferType(m.title||''));
+              const statusRaw = String(m.status || 'Scheduled');
+              const isCanceled = /cancel/i.test(statusRaw);
+              const status = isCanceled ? '⛔ Canceled' : ('✅ ' + statusRaw);
               const when = (function(w){ return w ? '🕒 ' + w : ''; })(formatWhen(m));
-              return [agenda, source, type, when].filter(Boolean).join('  •  ');
+              return [status, agenda, source, type, when].filter(Boolean).join('  •  ');
             }
             function escapeHtml(s){
               return String(s || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
