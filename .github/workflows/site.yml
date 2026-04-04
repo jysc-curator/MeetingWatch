@@ -82,6 +82,14 @@ jobs:
         if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
         run: python -m playwright install --with-deps chromium    
 
+      - name: Seed prior published datasets (for scrape-gap preservation)
+        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          curl -fsSL "https://jysc-curator.github.io/MeetingWatch/data/meetings.json" -o data/meetings.json || true
+          curl -fsSL "https://jysc-curator.github.io/MeetingWatch/data/history.json" -o data/history.json || true
+
       - name: Print effective PDF limits
         if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
         run: |

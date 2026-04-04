@@ -114,6 +114,76 @@ def _parse_date(text: str) -> Optional[str]:
 def _normalize(base: str, href: str) -> str:
     return urljoin(base if base.endswith('/') else base + '/', (href or '').lstrip('/'))
 
+
+def _api_events_candidates(host: str) -> List[Dict]:
+    api_base = _api_base_from_portal(host)
+    url = f"{api_base}/v1/Events"
+    out: List[Dict] = []
+    try:
+        now_utc = datetime.utcnow()
+        window_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        window_start = window_start.fromordinal(window_start.toordinal() - 21)
+        window_start_iso = window_start.isoformat() + "Z"
+
+        r = requests.get(
+            url,
+            params={
+                "$orderby": "startDateTime asc",
+                "$top": "500",
+                "$filter": f"startDateTime ge {window_start_iso}",
+            },
+            timeout=30,
+            headers=UA,
+        )
+        if r.status_code != 200:
+            return out
+        vals = (r.json() or {}).get("value") or []
+        if not isinstance(vals, list):
+            return out
+
+        for ev in vals:
+            title_raw = str(ev.get("eventName") or "").strip()
+            if not title_raw:
+                continue
+            status = _normalize_salida_status(title_raw)
+            title_clean = re.sub(r"\s*[-–—]?\s*cancel(?:ed|led)?\s*$", "", title_raw, flags=re.I).strip()
+            meeting_type = _classify_salida_title(title_clean)
+            if not meeting_type:
+                continue
+
+            date_iso = None
+            start_time_local = None
+            dt_raw = ev.get("startDateTime") or ev.get("eventDate")
+            if dt_raw:
+                try:
+                    dt = _dtparser.parse(str(dt_raw))
+                    date_iso = dt.date().isoformat()
+                    start_time_local = dt.strftime("%-I:%M %p")
+                except Exception:
+                    date_iso = _parse_date(str(dt_raw))
+
+            event_id = str(ev.get("id") or "").strip()
+            event_url = _normalize(host, f"event/{event_id}/overview/files") if event_id else host
+
+            meeting = make_meeting(
+                city_or_body=CITY_NAME,
+                meeting_type=meeting_type,
+                date=date_iso or "",
+                start_time_local=start_time_local,
+                status=status,
+                location=None,
+                agenda_url=None,
+                agenda_summary=[],
+                source=host,
+            )
+            meeting["provider"] = PROVIDER
+            meeting["url"] = event_url
+            out.append(meeting)
+    except Exception:
+        return out
+
+    return out
+
 def _same_site(a: str, b: str) -> bool:
     try:
         ha, hb = urlparse(a).hostname or "", urlparse(b).hostname or ""
@@ -585,6 +655,11 @@ def parse_salida() -> List[Dict]:
     print('[salida] parse_salida starting; hosts:', ', '.join(list(_hosts_to_try())))
 
     for host in _hosts_to_try():
+        api_items = _api_events_candidates(host)
+        if api_items:
+            discovered.extend(api_items)
+            break
+
         for path in ENTRY_PATHS:
             entry = (host + path).rstrip("/")
             tried_urls.append(entry)
