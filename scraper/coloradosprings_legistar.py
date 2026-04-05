@@ -325,6 +325,37 @@ def _parse_calendar_fallback(today_date) -> List[Dict]:
 
 # --- Main --------------------------------------------------------------------
 
+def _merge_duplicate_meetings(meetings: List[Dict]) -> List[Dict]:
+    """Merge near-duplicate CS meetings, preferring richer agenda-bearing records."""
+    merged: Dict[tuple, Dict] = {}
+    for m in meetings:
+        key = (
+            m.get("city_or_body"),
+            m.get("meeting_type"),
+            m.get("date"),
+            m.get("start_time_local"),
+        )
+        if key not in merged:
+            merged[key] = dict(m)
+            continue
+
+        cur = merged[key]
+        if (not cur.get("agenda_url")) and m.get("agenda_url"):
+            cur["agenda_url"] = m.get("agenda_url")
+        if (not cur.get("agenda_summary")) and m.get("agenda_summary"):
+            cur["agenda_summary"] = m.get("agenda_summary")
+        if (not cur.get("location")) and m.get("location"):
+            cur["location"] = m.get("location")
+        elif m.get("location") and cur.get("location") and len(str(m.get("location"))) > len(str(cur.get("location"))):
+            cur["location"] = m.get("location")
+        if str(cur.get("status") or "").lower() != "canceled" and str(m.get("status") or "").lower() == "canceled":
+            cur["status"] = m.get("status")
+
+        merged[key] = cur
+
+    return list(merged.values())
+
+
 def parse_legistar() -> List[Dict]:
     """
     Fetch events from Legistar, enrich with derived time and agenda summary.
@@ -422,20 +453,5 @@ def parse_legistar() -> List[Dict]:
     fallback_meetings = _parse_calendar_fallback(today)
     meetings.extend(fallback_meetings)
 
-    # Deduplicate by city/body + meeting type + date + start time + location
-    deduped: List[Dict] = []
-    seen = set()
-    for m in meetings:
-        key = (
-            m.get("city_or_body"),
-            m.get("meeting_type"),
-            m.get("date"),
-            m.get("start_time_local"),
-            m.get("location"),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(m)
-
-    return sorted(deduped, key=lambda x: (x.get("date") or "", x.get("start_time_local") or ""))
+    merged = _merge_duplicate_meetings(meetings)
+    return sorted(merged, key=lambda x: (x.get("date") or "", x.get("start_time_local") or ""))
