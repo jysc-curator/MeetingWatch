@@ -286,11 +286,17 @@ jobs:
           
           parts.append('<h1>MeetingWatch</h1>')
           parts.append(f'<div class="run-meta" data-run-ts="{html.escape(run_iso_utc)}"><strong>Latest run:</strong> {html.escape(run_ts_mt)} ({html.escape(run_ts_utc)}) <span id="freshnessNote"></span></div>')
-          parts.append('<p><a href="data/meetings.json">Download meetings.json</a></p>')
+          parts.append('<p><a href="data/meetings.json">Download meetings.json</a> · <a href="data/history.json">Download history.json</a></p>')
           
           # Controls + dynamic target
           parts.append('''
             <section id="controls">
+              <label><div style="font-weight:600;">View</div>
+                <select id="viewSelect">
+                  <option value="upcoming">Upcoming / Current</option>
+                  <option value="history">History (past 60 days)</option>
+                </select>
+              </label>
               <label><div style="font-weight:600;">City</div>
                 <select id="citySelect"><option value="">All cities</option></select>
               </label>
@@ -353,9 +359,15 @@ jobs:
           # ---------- Client-side filters + uniform card header ----------
           parts.append('''<script>
           (async function(){
-            const res = await fetch('data/meetings.json', {cache:'no-store'});
-            const raw = await res.json();
-            const items = Array.isArray(raw) ? raw : (raw.meetings || []);
+            const [meetingsRes, historyRes] = await Promise.all([
+              fetch('data/meetings.json', {cache:'no-store'}),
+              fetch('data/history.json', {cache:'no-store'}).catch(() => null),
+            ]);
+            const meetingsRaw = await meetingsRes.json();
+            const historyRaw = historyRes ? await historyRes.json() : { meetings: [] };
+
+            const items = Array.isArray(meetingsRaw) ? meetingsRaw : (meetingsRaw.meetings || []);
+            const historyItems = Array.isArray(historyRaw) ? historyRaw : (historyRaw.meetings || []);
 
             // Sort by date and time to ensure chronological order
             items.sort((a, b) => {
@@ -370,7 +382,20 @@ jobs:
               if (timeA > timeB) return 1;
               return 0;
             });
+            historyItems.sort((a, b) => {
+              const dateA = a.date || '';
+              const timeA = a.start_time_local || a.start_time || a.time || '';
+              const dateB = b.date || '';
+              const timeB = b.start_time_local || b.start_time || b.time || '';
+
+              if (dateA > dateB) return -1;
+              if (dateA < dateB) return 1;
+              if (timeA > timeB) return -1;
+              if (timeA < timeB) return 1;
+              return 0;
+            });
           
+            const viewSel = document.getElementById('viewSelect');
             const citySel = document.getElementById('citySelect');
             const srcSel  = document.getElementById('sourceSelect');
             const routineToggle = document.getElementById('routineToggle');
@@ -405,36 +430,49 @@ jobs:
               "El Paso County",
               "Trinidad"
             ];
-            
-            // Counts from current data (for badges)
-            const cityCounts = items.reduce((acc, x) => {
-              const c = (x.city || '').trim();
-              if (!c) return acc;
-              acc[c] = (acc[c] || 0) + 1;
-              return acc;
-            }, {});
-            
-            // Merge catalog ∪ data, then sort alphabetically
-            const cities = Array.from(new Set([
-              ...KNOWN_CITIES,
-              ...Object.keys(cityCounts)
-            ])).sort();
-            
-            // Build options with counts; keep selectable even if 0
-            for (const c of cities) {
-              const count = cityCounts[c] || 0;
-              citySel.append(new Option(`${c} (${count})`, c));
+
+            function getDataset(){
+              return viewSel.value === 'history' ? historyItems : items;
             }
-            
-            // Sources unchanged (built from data only)
-            const sources = [...new Set(items.map(x => (x.provider||'').trim()).filter(Boolean))].sort();
-            for (const s of sources) srcSel.append(new Option(s, s));
+
+            function refreshFilterOptions(){
+              const selectedCity = citySel.value;
+              const selectedSource = srcSel.value;
+              const dataset = getDataset();
+
+              const cityCounts = dataset.reduce((acc, x) => {
+                const c = (x.city || '').trim();
+                if (!c) return acc;
+                acc[c] = (acc[c] || 0) + 1;
+                return acc;
+              }, {});
+
+              const cities = Array.from(new Set([
+                ...KNOWN_CITIES,
+                ...Object.keys(cityCounts)
+              ])).sort();
+
+              citySel.innerHTML = '<option value="">All cities</option>';
+              for (const c of cities) {
+                const count = cityCounts[c] || 0;
+                citySel.append(new Option(`${c} (${count})`, c));
+              }
+              citySel.value = cities.includes(selectedCity) ? selectedCity : '';
+
+              const sources = [...new Set(dataset.map(x => ((x.provider || x.source || '')+'').trim()).filter(Boolean))].sort();
+              srcSel.innerHTML = '<option value="">All sources</option>';
+              for (const s of sources) srcSel.append(new Option(s, s));
+              srcSel.value = sources.includes(selectedSource) ? selectedSource : '';
+            }
 
           
             // Restore from URL/localStorage
             const url = new URL(location.href);
-            citySel.value = url.searchParams.get('city') ?? localStorage.getItem('mw_city') ?? '';
-            srcSel.value  = url.searchParams.get('source') ?? localStorage.getItem('mw_source') ?? '';
+            viewSel.value = url.searchParams.get('view') ?? localStorage.getItem('mw_view') ?? 'upcoming';
+            if (viewSel.value !== 'history' && viewSel.value !== 'upcoming') viewSel.value = 'upcoming';
+            refreshFilterOptions();
+            citySel.value = url.searchParams.get('city') ?? localStorage.getItem('mw_city') ?? citySel.value ?? '';
+            srcSel.value  = url.searchParams.get('source') ?? localStorage.getItem('mw_source') ?? srcSel.value ?? '';
             routineToggle.checked = (url.searchParams.get('showRoutine') ?? localStorage.getItem('mw_showRoutine') ?? '0') === '1';
             updateFreshness();
           
@@ -522,11 +560,13 @@ jobs:
               return keepHtml + routineHtml + docsHtml;
             }
             function syncState(){
-              const c = citySel.value, s = srcSel.value, showRoutine = routineToggle.checked;
+              const v = viewSel.value, c = citySel.value, s = srcSel.value, showRoutine = routineToggle.checked;
+              localStorage.setItem('mw_view', v);
               localStorage.setItem('mw_city', c);
               localStorage.setItem('mw_source', s);
               localStorage.setItem('mw_showRoutine', showRoutine ? '1' : '0');
               const u = new URL(location.href);
+              v ? u.searchParams.set('view', v) : u.searchParams.delete('view');
               c ? u.searchParams.set('city', c) : u.searchParams.delete('city');
               s ? u.searchParams.set('source', s) : u.searchParams.delete('source');
               showRoutine ? u.searchParams.set('showRoutine', '1') : u.searchParams.delete('showRoutine');
@@ -534,9 +574,10 @@ jobs:
             }
             function render(){
               syncState();
+              const dataset = getDataset();
               const c = citySel.value, s = srcSel.value, showRoutine = routineToggle.checked;
-              const filtered = items.filter(m =>
-                (!c || (m.city||'') === c) && (!s || (m.provider||'') === s)
+              const filtered = dataset.filter(m =>
+                (!c || (m.city||'') === c) && (!s || (((m.provider || m.source || '')+'') === s))
               );
               results.innerHTML = '';
               if (!filtered.length){
@@ -563,6 +604,7 @@ jobs:
                 results.appendChild(li);
               }
             }
+            viewSel.addEventListener('change', () => { refreshFilterOptions(); render(); });
             citySel.addEventListener('change', render);
             srcSel.addEventListener('change', render);
             routineToggle.addEventListener('change', render);
