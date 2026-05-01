@@ -33,13 +33,15 @@ def test_dedupe_keep_latest_prefers_last_value_for_same_id():
     assert deduped[0]["status"] == "Completed"
 
 
-def test_retention_drops_meetings_older_than_cutoff():
+def test_retention_drops_meetings_older_than_cutoff_and_excludes_future():
     meetings = [
         {"id": "drop", "date": "2026-01-01", "city": "A", "meeting_type": "Council"},
         {"id": "keep", "date": "2026-03-01", "city": "A", "meeting_type": "Council"},
+        {"id": "future", "date": "2026-05-20", "city": "A", "meeting_type": "Council"},
+        {"id": "today", "date": "2026-04-10", "city": "A", "meeting_type": "Council"},
         {"id": "unknown", "date": "", "city": "A", "meeting_type": "Council"},
     ]
 
-    kept = _apply_retention(meetings, date(2026, 2, 1))
+    kept = _apply_retention(meetings, date(2026, 2, 1), date(2026, 4, 10))
 
     assert {m["id"] for m in kept} == {"keep", "unknown"}

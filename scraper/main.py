@@ -71,11 +71,16 @@ def _dedupe_keep_latest(meetings: list[dict]) -> list[dict]:
     return list(deduped.values())
 
 
-def _apply_retention(meetings: list[dict], cutoff):
+def _apply_retention(meetings: list[dict], cutoff, today):
     kept = []
     for meeting in meetings:
         mdate = _parse_date(meeting.get("date"))
-        if mdate is None or mdate >= cutoff:
+        # History should include only past meetings within retention window.
+        # Exclude future/today records from history.
+        if mdate is None:
+            kept.append(meeting)
+            continue
+        if cutoff <= mdate < today:
             kept.append(meeting)
     return kept
 
@@ -176,7 +181,7 @@ def run():
 
     history_combined = existing_history + expired_from_previous + expired_from_new
     history_deduped = _dedupe_keep_latest(history_combined)
-    history_kept = _apply_retention(history_deduped, cutoff_date)
+    history_kept = _apply_retention(history_deduped, cutoff_date, today_mt)
     history_kept.sort(key=lambda m: (str(m.get("date") or ""), str(m.get("city") or ""), str(m.get("meeting_type") or "")), reverse=True)
 
     active_deduped = _dedupe_keep_latest(active_from_new)
