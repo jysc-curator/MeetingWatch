@@ -371,7 +371,14 @@ jobs:
             const historyRaw = historyRes ? await historyRes.json() : { meetings: [] };
 
             const items = Array.isArray(meetingsRaw) ? meetingsRaw : (meetingsRaw.meetings || []);
-            const historyItems = Array.isArray(historyRaw) ? historyRaw : (historyRaw.meetings || []);
+            const rawHistoryItems = Array.isArray(historyRaw) ? historyRaw : (historyRaw.meetings || []);
+            const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
+            const historyItems = rawHistoryItems.filter(m => {
+              const d = (m && m.date) ? String(m.date) : '';
+              // Defensive UI guard: history must never include today/future meetings.
+              // Keep undated records to avoid dropping legacy entries.
+              return !d || d < todayIso;
+            });
 
             // Sort by date and time to ensure chronological order
             items.sort((a, b) => {
