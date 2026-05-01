@@ -621,7 +621,7 @@ jobs:
           PY
 
 
-      - name: Sanity check: history file is published
+      - name: "Sanity check: history file is published"
         run: |
           test -s _site/data/history.json || (echo "ERROR: _site/data/history.json missing" && exit 1)
 
