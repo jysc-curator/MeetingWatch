@@ -180,15 +180,19 @@ jobs:
           name: scrape-data
           path: ./data
 
-      - name: Preserve prior meetings data for no-op scheduled runs
+      - name: Preserve prior meetings/history data for no-op scheduled runs
         if: ${{ github.event_name == 'schedule' && needs.scrape.outputs.should_run != 'true' }}
         run: |
           set -euo pipefail
           mkdir -p data
           curl -fsSL "https://jysc-curator.github.io/MeetingWatch/data/meetings.json" -o data/meetings.json || true
+          curl -fsSL "https://jysc-curator.github.io/MeetingWatch/data/history.json" -o data/history.json || true
 
           if [ ! -s data/meetings.json ]; then
             echo '{"meetings": []}' > data/meetings.json
+          fi
+          if [ ! -s data/history.json ]; then
+            echo '{"last_archived_mt": null, "retention_days": 60, "meetings": []}' > data/history.json
           fi
 
       - name: Prepare static site
@@ -616,6 +620,10 @@ jobs:
           (out_dir/'index.html').write_text('\n'.join(parts), encoding='utf-8')
           PY
 
+
+      - name: Sanity check: history file is published
+        run: |
+          test -s _site/data/history.json || (echo "ERROR: _site/data/history.json missing" && exit 1)
 
       - name: List built site (debug)
         run: |
