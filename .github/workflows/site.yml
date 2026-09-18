@@ -43,9 +43,12 @@ jobs:
         uses: actions/cache@v5
         with:
           path: data/cache/editorial_briefings
-          key: editorial-${{ runner.os }}-${{ hashFiles('scraper/summarize.py') }}-${{ github.run_id }}
+          # The on-disk filenames already include prompt version, model and
+          # source hash, so the outer Actions cache can remain stable across
+          # code-only fixes and safely reuse still-valid briefings.
+          key: editorial-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
-            editorial-${{ runner.os }}-${{ hashFiles('scraper/summarize.py') }}-
+            editorial-${{ runner.os }}-
 
       - name: Cron heartbeat
         run: |

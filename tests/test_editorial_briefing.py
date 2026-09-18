@@ -140,3 +140,26 @@ def test_numeric_validation_handles_pdf_line_wrapping():
     }
     _, errors = _validate_briefing(raw, source)
     assert errors == []
+
+
+def test_numeric_validation_handles_hyphenated_singular_acreage():
+    source = "[PAGE 1]\nA request to rezone one 47.55-acre property from RR-5 to RR-2.5."
+    raw = {
+        "overview": "Commissioners will consider a rezoning.",
+        "items": [
+            {
+                "headline": "Rezone a 47.55-acre property",
+                "action": "Commissioners will consider rezoning 47.55 acres from RR-5 to RR-2.5.",
+                "why_it_matters": "The action would change the permitted residential density.",
+                "priority": "top",
+                "category": "land-use",
+                "agenda_item": "P-26-008",
+                "source_page": 1,
+                "key_facts": ["47.55 acres", "RR-5 to RR-2.5"],
+                "evidence": "A request to rezone one 47.55-acre property from RR-5 to RR-2.5.",
+            }
+        ],
+        "routine_items": [],
+    }
+    _, errors = _validate_briefing(raw, source)
+    assert errors == []

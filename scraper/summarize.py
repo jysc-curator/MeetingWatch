@@ -308,8 +308,8 @@ def _numeric_token_supported(token: str, source: str) -> bool:
         if token_match:
             target = _parse_money(token_match)
             return any(_parse_money(match) == target for match in _MONEY_RE.finditer(source))
-    compact = re.sub(r"\s+", "", token.lower()).replace(",", "")
-    source_compact = re.sub(r"\s+", "", source.lower()).replace(",", "")
+    compact = re.sub(r"[\s,\-]+", "", token.lower()).replace("acres", "acre")
+    source_compact = re.sub(r"[\s,\-]+", "", source.lower()).replace("acres", "acre")
     return compact in source_compact
 
 
