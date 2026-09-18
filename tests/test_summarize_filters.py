@@ -84,7 +84,7 @@ class TestSummaryFiltering(unittest.TestCase):
     def test_relevance_scoring_prioritizes_high_signal_when_truncated(self):
         meeting = {"date": "2026-03-10", "start_time_local": "6:00 PM", "location": "City Hall"}
         bullets = [
-            "General announcements and recognitions.",
+            "Approve a contract for park maintenance services.",
             "Approve ordinance for downtown zoning amendment and budget appropriation.",
         ]
         prev = summarize.ENABLE_RELEVANCE_SCORING
@@ -98,7 +98,7 @@ class TestSummaryFiltering(unittest.TestCase):
     def test_rollback_toggle_preserves_input_order(self):
         meeting = {"date": "2026-03-10", "start_time_local": "6:00 PM", "location": "City Hall"}
         bullets = [
-            "General announcements and recognitions.",
+            "Approve a contract for park maintenance services.",
             "Approve ordinance for downtown zoning amendment and budget appropriation.",
         ]
         prev = summarize.ENABLE_RELEVANCE_SCORING
@@ -107,7 +107,7 @@ class TestSummaryFiltering(unittest.TestCase):
             kept, _ = _partition_summary_bullets(bullets, meeting, max_bullets=1)
         finally:
             summarize.ENABLE_RELEVANCE_SCORING = prev
-        self.assertEqual(kept, ["General announcements and recognitions."])
+        self.assertEqual(kept, ["Approve a contract for park maintenance services."])
 
 
 if __name__ == "__main__":

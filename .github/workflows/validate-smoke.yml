@@ -17,10 +17,14 @@ jobs:
     # For workflow_run events: only proceed if upstream workflow succeeded.
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
+      - name: Checkout validation code
+        uses: actions/checkout@v6
+
       - name: Set target URLs
         run: |
           echo "SITE_URL=https://jysc-curator.github.io/MeetingWatch/" >> $GITHUB_ENV
           echo "JSON_URL=https://jysc-curator.github.io/MeetingWatch/data/meetings.json" >> $GITHUB_ENV
+          echo "HISTORY_URL=https://jysc-curator.github.io/MeetingWatch/data/history.json" >> $GITHUB_ENV
 
       - name: Check homepage returns HTTP 200
         run: |
@@ -36,39 +40,47 @@ jobs:
           echo "meetings.json status: $code"
           test "$code" = "200"
 
-      - name: Validate meetings.json parses and has expected shape
+      - name: Check history.json returns HTTP 200
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import json
-          p = '/tmp/meetings.json'
-          with open(p, 'r', encoding='utf-8') as f:
-              data = json.load(f)
-          assert isinstance(data, dict), 'Expected top-level JSON object'
-          assert 'meetings' in data, 'Expected key: meetings'
-          assert isinstance(data['meetings'], list), 'Expected meetings to be an array'
-          print(f"OK: meetings count = {len(data['meetings'])}")
-          PY
+          code=$(curl -sS -o /tmp/history.json -w "%{http_code}" "$HISTORY_URL")
+          echo "history.json status: $code"
+          test "$code" = "200"
+
+      - name: Validate freshness, dates, retention, and overlap
+        run: |
+          python scripts/validate_data.py \
+            --meetings /tmp/meetings.json \
+            --history /tmp/history.json \
+            --max-age-hours 36 \
+            --min-active 1
 
   alert_on_failure:
-    name: Open issue on smoke failure
+    name: Open issue on pipeline or smoke failure
     runs-on: ubuntu-latest
     needs: [smoke]
-    if: ${{ always() && needs.smoke.result == 'failure' }}
+    if: >-
+      ${{ always() && (
+        needs.smoke.result == 'failure' ||
+        (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success')
+      ) }}
     steps:
       - name: Create/append alert issue
         uses: actions/github-script@v8
         with:
           script: |
             const title = '🚨 Smoke check failed (MeetingWatch)';
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const upstreamFailed = context.eventName === 'workflow_run' && context.payload.workflow_run.conclusion !== 'success';
+            const runUrl = upstreamFailed
+              ? context.payload.workflow_run.html_url
+              : `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
-              'Smoke validation failed after deploy.',
+              upstreamFailed ? 'Scrape/build/deploy pipeline failed.' : 'Smoke validation failed after deploy.',
               '',
               `Run: ${runUrl}`,
               `Triggered by: ${context.eventName}`,
               '',
-              'Please review workflow logs and verify homepage + data/meetings.json health.'
+              'Please review workflow logs and verify homepage freshness plus active/history dataset integrity.'
             ].join('\n');
 
             const { data: issues } = await github.rest.issues.listForRepo({

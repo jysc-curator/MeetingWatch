@@ -1,12 +1,13 @@
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 
 def run_validator(tmp_path, payload, dry=False):
     cfg = tmp_path / "cities.json"
     cfg.write_text(json.dumps(payload), encoding="utf-8")
-    cmd = ["python3", "scripts/onboarding_validate.py", "--config", str(cfg)]
+    cmd = [sys.executable, "scripts/onboarding_validate.py", "--config", str(cfg)]
     if dry:
         cmd.append("--dry-run")
     p = subprocess.run(cmd, capture_output=True, text=True)

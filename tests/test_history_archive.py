@@ -17,7 +17,7 @@ def test_split_active_and_expired_by_date():
 
     active, expired = _split_active_and_expired(meetings, date(2026, 4, 2))
 
-    assert {m["id"] for m in active} == {"today", "future", "unknown"}
+    assert {m["id"] for m in active} == {"today", "future"}
     assert {m["id"] for m in expired} == {"past"}
 
 
@@ -44,4 +44,4 @@ def test_retention_drops_meetings_older_than_cutoff_and_excludes_future():
 
     kept = _apply_retention(meetings, date(2026, 2, 1), date(2026, 4, 10))
 
-    assert {m["id"] for m in kept} == {"keep", "unknown"}
+    assert {m["id"] for m in kept} == {"keep"}

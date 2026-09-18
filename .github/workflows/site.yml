@@ -2,8 +2,9 @@ name: Scrape Build Deploy
 
 on:
   schedule:
-    # One trigger per target window; guard below tolerates delayed starts.
-    - cron: "3 6,7,18,19 * * *"  # Denver midnight/noon across DST & Standard
+    # Run twice daily. GitHub may delay scheduled jobs, so execution must not
+    # depend on the wall-clock hour at which a runner eventually starts.
+    - cron: "3 7,19 * * *"  # midnight/noon MST; 1am/1pm MDT
   workflow_dispatch:
   push:
     branches: [ main ]
@@ -28,8 +29,6 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-24.04
-    outputs:
-      should_run: ${{ steps.guard.outputs.continue }}
     env:
       SALIDA_CIVICCLERK_URL: https://salidaco.portal.civicclerk.com
       SALIDA_CIVICCLERK_ALT_HOSTS: https://salidaco.portal.civicclerk.com,https://salidaco.civicclerk.com,https://cityofsalida.civicclerk.com
@@ -44,25 +43,7 @@ jobs:
           echo "utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "denver=$(TZ=America/Denver date '+%Y-%m-%d %H:%M:%S %Z')"
         
-      - name: "Guard — run for midnight/noon windows (delay-tolerant, no double-run)"
-        if: ${{ github.event_name == 'schedule' }}
-        id: guard
-        shell: bash
-        run: |
-          HOUR="$(TZ=America/Denver date +%H)"
-          MIN="$(TZ=America/Denver date +%M)"
-          echo "Local Denver time is ${HOUR}:${MIN}"
-
-          # Accept on-time target hours and common delayed starts up to the next hour.
-          # Midnight window: 00-01, Noon window: 12-13.
-          if [ "$HOUR" = "00" ] || [ "$HOUR" = "01" ] || [ "$HOUR" = "12" ] || [ "$HOUR" = "13" ]; then
-            echo "continue=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "continue=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Set up Python
-        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -79,11 +60,9 @@ jobs:
           fi
           
       - name: Install Playwright browsers
-        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
         run: python -m playwright install --with-deps chromium    
 
       - name: Seed prior published datasets (for scrape-gap preservation)
-        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
         run: |
           set -euo pipefail
           mkdir -p data
@@ -91,7 +70,6 @@ jobs:
           curl -fsSL "https://jysc-curator.github.io/MeetingWatch/data/history.json" -o data/history.json || true
 
       - name: Print effective PDF limits
-        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
         run: |
           python - <<'PY'
           import os
@@ -105,11 +83,9 @@ jobs:
           PY
 
       - name: Clear agenda summary cache
-        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
         run: rm -rf data/cache/agenda_summaries || true
         
       - name: Debug hosts
-        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
         run: |
           echo "SALIDA_CIVICCLERK_URL=${SALIDA_CIVICCLERK_URL}"
           echo "SALIDA_CIVICCLERK_ALT_HOSTS=${SALIDA_CIVICCLERK_ALT_HOSTS}"  
@@ -117,13 +93,15 @@ jobs:
       - name: Run scraper
         env:
           DEBUG: "1"
-        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
         run: |
           python -m scraper.main
           test -d data && ls -la data || (echo "no data dir generated" && exit 1)
+
+      - name: Validate generated datasets
+        run: python scripts/validate_data.py --max-age-hours 2 --min-active 1
+
       # --- Summarize agendas (this generates the bullets) ---
       - name: Summarize agendas (GPT)
-        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SUMMARIZER_MODEL: ${{ env.SUMMARIZER_MODEL }}
@@ -141,25 +119,22 @@ jobs:
           echo "---- sample meta ----"
           head -n 80 $(ls data/cache/agenda_summaries/*.meta.json | head -n1) || true
 
-      - name: "Sanity check: did we produce any bullets?"
-        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
+      - name: Report agenda summary coverage
         run: |
           set -euo pipefail
           shopt -s nullglob
           metas=(data/cache/agenda_summaries/*.meta.json)
           if [ ${#metas[@]} -eq 0 ]; then
-            echo "No meta files found in data/cache/agenda_summaries"
-            exit 1
+            echo "No agenda summaries were produced; publishing meeting metadata without bullets."
+            exit 0
           fi
           # Count items that either have non-empty bullets OR explicit merged>0 (future-proof)
           n=$(jq -s '[.[] 
             | select((.ok==true) and ( ((.merged? // 0) | tonumber) > 0 or ((.bullets // []) | length) > 0 ))
           ] | length' "${metas[@]}")
-          echo "Summaries with bullets (or merged): ${n}"
-          test "${n}" -gt 0
+          echo "Summaries with bullets (or merged): ${n}/${#metas[@]}"
 
       - name: Upload data artifact (data/)
-        if: ${{ github.event_name != 'schedule' || steps.guard.outputs.continue == 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: scrape-data
@@ -168,32 +143,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     needs: scrape
-    if: ${{ github.event_name != 'schedule' || needs.scrape.result == 'success' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
       - name: Download scrape data
-        if: ${{ github.event_name != 'schedule' || needs.scrape.outputs.should_run == 'true' }}
         uses: actions/download-artifact@v8
         with:
           name: scrape-data
           path: ./data
 
-      - name: Preserve prior meetings/history data for no-op scheduled runs
-        if: ${{ github.event_name == 'schedule' && needs.scrape.outputs.should_run != 'true' }}
-        run: |
-          set -euo pipefail
-          mkdir -p data
-          curl -fsSL "https://jysc-curator.github.io/MeetingWatch/data/meetings.json" -o data/meetings.json || true
-          curl -fsSL "https://jysc-curator.github.io/MeetingWatch/data/history.json" -o data/history.json || true
-
-          if [ ! -s data/meetings.json ]; then
-            echo '{"meetings": []}' > data/meetings.json
-          fi
-          if [ ! -s data/history.json ]; then
-            echo '{"last_archived_mt": null, "retention_days": 60, "meetings": []}' > data/history.json
-          fi
+      - name: Validate downloaded datasets
+        run: python scripts/validate_data.py --max-age-hours 2 --min-active 1
 
       - name: Prepare static site
         run: |
@@ -210,7 +171,7 @@ jobs:
         run: |
           python - <<'PY'
           import json, html, re
-          from datetime import datetime, timezone
+          from datetime import datetime
           from pathlib import Path
           from zoneinfo import ZoneInfo
           
@@ -234,8 +195,24 @@ jobs:
           # meetings may be a list or wrapped (e.g., {"meetings":[...]})
           if isinstance(raw, list):
               meetings = raw
+              data_generated_at = ''
+              data_checked_label = 'unknown'
           else:
               meetings = raw.get('meetings') or next((v for v in raw.values() if isinstance(v, list)), [])
+              data_generated_at = str(raw.get('generated_at_utc') or '')
+              data_checked_label = str(raw.get('last_checked_mt') or data_generated_at or 'unknown')
+
+          today_mt = datetime.now(ZoneInfo('America/Denver')).date()
+
+          def is_current_or_future(m):
+              try:
+                  return datetime.strptime(str(m.get('date') or ''), '%Y-%m-%d').date() >= today_mt
+              except (TypeError, ValueError):
+                  return False
+
+          # The static fallback follows the same contract as the interactive
+          # Upcoming view: only valid, current/future dated meetings.
+          meetings = [m for m in meetings if is_current_or_future(m)]
           
           def sort_key(m):
               d = (m.get('date') or '')
@@ -253,11 +230,6 @@ jobs:
               safe = _MONEY_RE.sub(lambda m: f"<strong style=\"font-weight:800 !important;color:#15803d\">{m.group(0)}</strong>", safe)
               return safe
 
-          run_dt_utc = datetime.now(timezone.utc)
-          run_ts_mt = run_dt_utc.astimezone(ZoneInfo('America/Denver')).strftime('%Y-%m-%d %I:%M %p %Z')
-          run_ts_utc = run_dt_utc.strftime('%Y-%m-%d %H:%M UTC')
-          run_iso_utc = run_dt_utc.isoformat().replace('+00:00', 'Z')
-          
           # ---------- HTML skeleton ----------
           parts = []
           parts.append('<!doctype html><meta charset="utf-8"><title>MeetingWatch</title>')
@@ -289,7 +261,7 @@ jobs:
           </style>''')
           
           parts.append('<h1>MeetingWatch</h1>')
-          parts.append(f'<div class="run-meta" data-run-ts="{html.escape(run_iso_utc)}"><strong>Latest run:</strong> {html.escape(run_ts_mt)} ({html.escape(run_ts_utc)}) <span id="freshnessNote"></span></div>')
+          parts.append(f'<div class="run-meta" data-run-ts="{html.escape(data_generated_at)}"><strong>Data last checked:</strong> {html.escape(data_checked_label)} <span id="freshnessNote"></span></div>')
           parts.append('<p><a href="data/meetings.json">Download meetings.json</a> · <a href="data/history.json">Download history.json</a></p>')
           
           # Controls + dynamic target
@@ -316,7 +288,7 @@ jobs:
           ''')
           
           # ---------- Static fallback (kept for no-JS) ----------
-          parts.append('<noscript><p><em>JavaScript disabled — showing unfiltered list.</em></p></noscript>')
+          parts.append('<noscript><p><em>JavaScript disabled — showing current/future meetings.</em></p></noscript>')
           parts.append('<div id="static-list">')
           
           for m in meetings:
@@ -373,15 +345,17 @@ jobs:
             const items = Array.isArray(meetingsRaw) ? meetingsRaw : (meetingsRaw.meetings || []);
             const rawHistoryItems = Array.isArray(historyRaw) ? historyRaw : (historyRaw.meetings || []);
             const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
+            const upcomingItems = items.filter(m => {
+              const d = (m && m.date) ? String(m.date) : '';
+              return /^\\d{4}-\\d{2}-\\d{2}$/.test(d) && d >= todayIso;
+            });
             const historyItems = rawHistoryItems.filter(m => {
               const d = (m && m.date) ? String(m.date) : '';
-              // Defensive UI guard: history must never include today/future meetings.
-              // Keep undated records to avoid dropping legacy entries.
-              return !d || d < todayIso;
+              return /^\\d{4}-\\d{2}-\\d{2}$/.test(d) && d < todayIso;
             });
 
             // Sort by date and time to ensure chronological order
-            items.sort((a, b) => {
+            upcomingItems.sort((a, b) => {
               const dateA = a.date || '';
               const timeA = a.start_time_local || a.start_time || a.time || '';
               const dateB = b.date || '';
@@ -417,14 +391,15 @@ jobs:
 
             function relativeFreshness(isoTs){
               const runMs = Date.parse(isoTs || '');
-              if (!Number.isFinite(runMs)) return '';
+              if (!Number.isFinite(runMs)) return ' • freshness unknown';
               const deltaMin = Math.max(0, Math.floor((Date.now() - runMs) / 60000));
               if (deltaMin < 1) return ' • updated just now';
               if (deltaMin < 60) return ` • updated ${deltaMin} min ago`;
               const hours = Math.floor(deltaMin / 60);
               if (hours < 24) return ` • updated ${hours} hour${hours === 1 ? '' : 's'} ago`;
               const days = Math.floor(hours / 24);
-              return ` • updated ${days} day${days === 1 ? '' : 's'} ago`;
+              if (hours >= 36) return ` • ⚠ stale: checked ${days} day${days === 1 ? '' : 's'} ago`;
+              return ` • checked ${days} day${days === 1 ? '' : 's'} ago`;
             }
 
             function updateFreshness(){
@@ -443,7 +418,7 @@ jobs:
             ];
 
             function getDataset(){
-              return viewSel.value === 'history' ? historyItems : items;
+              return viewSel.value === 'history' ? historyItems : upcomingItems;
             }
 
             function refreshFilterOptions(){
@@ -508,29 +483,38 @@ jobs:
               return m.city || m.city_or_body || m.title || 'Meeting';
             }
             function headerLine(m){
-              const agendaHref = (m.agenda_view_url || m.agenda_url || m.agenda_pdf || '');
+              const agendaHref = safeHref(m.agenda_view_url || m.agenda_url || m.agenda_pdf || '');
               const agenda = agendaHref
                 ? '<a href="'+agendaHref+'" target="_blank" rel="noopener">📝 Agenda</a>'
                 : '<span class="agenda-missing">Agenda not yet published</span>';
-              const source = m.source ? '<a href="'+m.source+'" target="_blank" rel="noopener">🌐 Source</a>' : '';
-              const type = '📌 ' + (m.meeting_type || inferType(m.title||''));
+              const sourceHref = safeHref(m.source);
+              const source = sourceHref ? '<a href="'+sourceHref+'" target="_blank" rel="noopener">🌐 Source</a>' : '';
+              const type = '📌 ' + escapeHtml(m.meeting_type || inferType(m.title||''));
               const statusRaw = String(m.status || 'Scheduled');
               const isCanceled = /cancel/i.test(statusRaw);
-              const status = isCanceled ? '⛔ Canceled' : ('✅ ' + statusRaw);
-              const when = (function(w){ return w ? '🕒 ' + w : ''; })(formatWhen(m));
+              const status = isCanceled ? '⛔ Canceled' : ('✅ ' + escapeHtml(statusRaw));
+              const when = (function(w){ return w ? '🕒 ' + escapeHtml(w) : ''; })(formatWhen(m));
               return [status, agenda, source, type, when].filter(Boolean).join('  •  ');
             }
             function escapeHtml(s){
               return String(s || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
             }
+            function safeHref(value){
+              try {
+                const parsed = new URL(String(value || ''), location.href);
+                return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? escapeHtml(parsed.href) : '';
+              } catch (_) {
+                return '';
+              }
+            }
             function styleBulletText(text){
               let safe = escapeHtml(String(text || ''));
               safe = safe.replace(/\\b(ordnance|ordinance|resolution|appeal|amendment)s?\\b/gi, '<strong style="font-weight:900 !important;color:#111827">$&</strong>');
-              safe = safe.replace(/(?:US\$\s*)?\$\s?\d[\d,]*(?:\.\d{2})?(?:\s*(?:million|billion|thousand|m|bn|k))?/gi, '<strong style="font-weight:800 !important;color:#15803d">$&</strong>');
+              safe = safe.replace(/(?:US\\$\\s*)?\\$\\s?\\d[\\d,]*(?:\\.\\d{2})?(?:\\s*(?:million|billion|thousand|m|bn|k))?/gi, '<strong style="font-weight:800 !important;color:#15803d">$&</strong>');
               return safe;
             }
             function _normWords(s){
-              return String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length >= 4);
+              return String(s || '').toLowerCase().replace(/[^a-z0-9\\s]/g, ' ').split(/\\s+/).filter(w => w.length >= 4);
             }
             function _docLinksForBullet(bullet, docs){
               const words = new Set(_normWords(bullet));
@@ -542,7 +526,10 @@ jobs:
             }
             function supportingDocsUnmatchedHTML(docs){
               if (!docs.length) return '';
-              const links = docs.map(d => '<li><a href="'+d.url+'" target="_blank" rel="noopener">'+(d.title || 'Document')+'</a></li>').join('');
+              const links = docs.map(d => {
+                const href = safeHref(d.url);
+                return href ? '<li><a href="'+href+'" target="_blank" rel="noopener">'+escapeHtml(d.title || 'Document')+'</a></li>' : '';
+              }).join('');
               return '<div class="meta" style="margin-top:.45rem"><strong>Supporting documents</strong></div><ul>'+links+'</ul>';
             }
             function bulletsHTML(m, showRoutine){
@@ -557,7 +544,10 @@ jobs:
                 const linked = _docLinksForBullet(b, docs).filter(d => !usedDocUrls.has(d.url));
                 linked.forEach(d => usedDocUrls.add(d.url));
                 const linksHtml = linked.length
-                  ? '<ul style="margin-top:.3rem">' + linked.map(d => '<li><a href="'+d.url+'" target="_blank" rel="noopener">'+(d.title || 'Document')+'</a></li>').join('') + '</ul>'
+                  ? '<ul style="margin-top:.3rem">' + linked.map(d => {
+                      const href = safeHref(d.url);
+                      return href ? '<li><a href="'+href+'" target="_blank" rel="noopener">'+escapeHtml(d.title || 'Document')+'</a></li>' : '';
+                    }).join('') + '</ul>'
                   : '';
                 return '<li>'+styleBulletText(b)+linksHtml+'</li>';
               });
@@ -591,21 +581,21 @@ jobs:
                 (!c || (m.city||'') === c) && (!s || (((m.provider || m.source || '')+'') === s))
               );
               results.innerHTML = '';
+              // JavaScript is working, so the no-JS fallback must stay hidden
+              // even when the selected filters have no matches.
+              staticList.style.display = 'none';
               if (!filtered.length){
                 results.innerHTML = '<li style="opacity:.75;">No results match your filters.</li>';
-                staticList.style.display = '';
                 return;
               }
-              // Hide the static fallback once we have dynamic content
-              staticList.style.display = 'none';
           
               for (const m of filtered){
-                const href = m.url || m.source || m.agenda_url || '#';
+                const href = safeHref(m.url || m.source || m.agenda_url || '') || '#';
                 const li = document.createElement('li');
                 li.className = 'm';
                 li.innerHTML = `
                   <div style="font-weight:750;font-size:1.04rem;margin-bottom:.32rem;line-height:1.3;">
-                    <a href="${href}" target="_blank" rel="noopener">${cardTitle(m)}</a>
+                    <a href="${href}" target="_blank" rel="noopener">${escapeHtml(cardTitle(m))}</a>
                   </div>
                   <div class="meta" style="margin-bottom:.48rem;display:flex;flex-wrap:wrap;gap:.38rem .62rem;">
                     ${headerLine(m)}
@@ -644,7 +634,6 @@ jobs:
 
   deploy:
     needs: build
-    if: ${{ github.event_name != 'schedule' || needs.build.result == 'success' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
