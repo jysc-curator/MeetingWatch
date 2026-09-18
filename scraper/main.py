@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .utils import now_mt
@@ -55,7 +55,7 @@ def _split_active_and_expired(meetings: list[dict], today):
     for meeting in meetings:
         mdate = _parse_date(meeting.get("date"))
         if mdate is None:
-            active.append(meeting)
+            print(f"Skipping meeting with missing/invalid date: {_meeting_key(meeting)}")
             continue
         if mdate < today:
             expired.append(meeting)
@@ -75,10 +75,7 @@ def _apply_retention(meetings: list[dict], cutoff, today):
     kept = []
     for meeting in meetings:
         mdate = _parse_date(meeting.get("date"))
-        # History should include only past meetings within retention window.
-        # Exclude future/today records from history.
         if mdate is None:
-            kept.append(meeting)
             continue
         if cutoff <= mdate < today:
             kept.append(meeting)
@@ -164,7 +161,9 @@ def run():
     out_path = data_dir / "meetings.json"
     history_path = data_dir / "history.json"
 
-    today_mt = now_mt().date()
+    checked_mt = now_mt()
+    generated_at_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    today_mt = checked_mt.date()
     cutoff_date = today_mt.fromordinal(today_mt.toordinal() - RETENTION_DAYS)
 
     previous_active = _load_meetings(out_path)
@@ -188,12 +187,14 @@ def run():
     active_deduped.sort(key=lambda m: (str(m.get("date") or ""), str(m.get("city") or ""), str(m.get("meeting_type") or "")))
 
     out = {
-        "last_checked_mt": now_mt().strftime("%Y-%m-%d %H:%M"),
+        "generated_at_utc": generated_at_utc,
+        "last_checked_mt": checked_mt.strftime("%Y-%m-%d %H:%M %Z"),
         "meetings": active_deduped,
     }
 
     history_out = {
-        "last_archived_mt": now_mt().strftime("%Y-%m-%d %H:%M"),
+        "generated_at_utc": generated_at_utc,
+        "last_archived_mt": checked_mt.strftime("%Y-%m-%d %H:%M %Z"),
         "retention_days": RETENTION_DAYS,
         "meetings": history_kept,
     }
