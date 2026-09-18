@@ -2,12 +2,12 @@ name: Scrape Build Deploy
 
 on:
   schedule:
-    # Run twice daily. GitHub may delay scheduled jobs, so execution must not
-    # depend on the wall-clock hour at which a runner eventually starts.
-    - cron: "3 7,19 * * *"  # midnight/noon MST; 1am/1pm MDT
+    # GitHub may delay scheduled jobs, so execution never depends on the hour
+    # at which a runner eventually starts.
+    - cron: "3 7,19 * * *" # midnight/noon MST; 1am/1pm MDT
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [main]
 
 permissions:
   contents: read
@@ -15,13 +15,15 @@ permissions:
   id-token: write
 
 env:
-  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-  SUMMARIZER_MODEL: gpt-4o-mini
-  PDF_SUMMARY_MAX_PAGES: '30'
-  PDF_SUMMARY_MAX_CHARS: '72000'
-  PDF_SUMMARY_MAX_BULLETS: '16'
-  PDF_SUMMARY_DEBUG: '1'
-  
+  # Scrapers only collect source metadata. The dedicated editorial step is the
+  # single production path allowed to call the model.
+  SUMMARIZER_DISABLE: "1"
+  SUMMARIZER_MODEL: gpt-5-mini
+  PDF_SUMMARY_MAX_PAGES: "30"
+  PDF_SUMMARY_MAX_CHARS: "90000"
+  PDF_SUMMARY_MAX_BULLETS: "8"
+  PDF_SUMMARY_DEBUG: "1"
+
 concurrency:
   group: daily-${{ github.ref }}
   cancel-in-progress: false
@@ -36,61 +38,41 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        
+
+      - name: Restore editorial briefing cache
+        uses: actions/cache@v5
+        with:
+          path: data/cache/editorial_briefings
+          key: editorial-${{ runner.os }}-${{ hashFiles('scraper/summarize.py') }}-${{ github.run_id }}
+          restore-keys: |
+            editorial-${{ runner.os }}-${{ hashFiles('scraper/summarize.py') }}-
+
       - name: Cron heartbeat
         run: |
           echo "event=${{ github.event_name }}"
           echo "utc=$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo "denver=$(TZ=America/Denver date '+%Y-%m-%d %H:%M:%S %Z')"
-        
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          elif [ -f scraper/requirements.txt ]; then
-            pip install -r scraper/requirements.txt
-          else
-            echo "requirements.txt not found" && exit 1
-          fi
-          
-      - name: Install Playwright browsers
-        run: python -m playwright install --with-deps chromium    
+          pip install -r scraper/requirements.txt
 
-      - name: Seed prior published datasets (for scrape-gap preservation)
+      - name: Install Playwright browsers
+        run: python -m playwright install --with-deps chromium
+
+      - name: Seed prior published datasets
         run: |
-          set -euo pipefail
           mkdir -p data
           curl -fsSL "https://jysc-curator.github.io/MeetingWatch/data/meetings.json" -o data/meetings.json || true
           curl -fsSL "https://jysc-curator.github.io/MeetingWatch/data/history.json" -o data/history.json || true
 
-      - name: Print effective PDF limits
-        run: |
-          python - <<'PY'
-          import os
-          from scraper.utils import _MAX_BULLETS, _DEFAULT_MAX_PAGES, _DEFAULT_MAX_CHARS
-          print("ENV.PDF_SUMMARY_MAX_BULLETS =", os.getenv("PDF_SUMMARY_MAX_BULLETS"))
-          print("ENV.PDF_SUMMARY_MAX_PAGES   =", os.getenv("PDF_SUMMARY_MAX_PAGES"))
-          print("ENV.PDF_SUMMARY_MAX_CHARS   =", os.getenv("PDF_SUMMARY_MAX_CHARS"))
-          print("utils._MAX_BULLETS          =", _MAX_BULLETS)
-          print("utils._DEFAULT_MAX_PAGES    =", _DEFAULT_MAX_PAGES)
-          print("utils._DEFAULT_MAX_CHARS    =", _DEFAULT_MAX_CHARS)
-          PY
-
-      - name: Clear agenda summary cache
-        run: rm -rf data/cache/agenda_summaries || true
-        
-      - name: Debug hosts
-        run: |
-          echo "SALIDA_CIVICCLERK_URL=${SALIDA_CIVICCLERK_URL}"
-          echo "SALIDA_CIVICCLERK_ALT_HOSTS=${SALIDA_CIVICCLERK_ALT_HOSTS}"  
-
-      - name: Run scraper
+      - name: Run scrapers
         env:
           DEBUG: "1"
         run: |
@@ -100,41 +82,33 @@ jobs:
       - name: Validate generated datasets
         run: python scripts/validate_data.py --max-age-hours 2 --min-active 1
 
-      # --- Summarize agendas (this generates the bullets) ---
-      - name: Summarize agendas (GPT)
+      - name: Generate evidence-backed editorial briefings
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          SUMMARIZER_MODEL: ${{ env.SUMMARIZER_MODEL }}
-          PDF_SUMMARY_DEBUG: '1'
         run: |
           set -euxo pipefail
-          python -m scraper.summarize --input data/meetings.json --out data/cache/agenda_summaries
+          mkdir -p data/cache/editorial_briefings
+          python -m scraper.summarize \
+            --input data/meetings.json \
+            --out data/cache/editorial_briefings
 
-          echo "---- agenda_summaries (ls) ----"
-          ls -la data/cache/agenda_summaries || true
+      - name: Validate editorial publishing contract
+        run: python scripts/validate_data.py --max-age-hours 2 --min-active 1
 
-          echo "---- any meta errors ----"
-          (grep -Hn '"error"' data/cache/agenda_summaries/*.meta.json || true)
-
-          echo "---- sample meta ----"
-          head -n 80 $(ls data/cache/agenda_summaries/*.meta.json | head -n1) || true
-
-      - name: Report agenda summary coverage
+      - name: Report editorial coverage
         run: |
           set -euo pipefail
           shopt -s nullglob
-          metas=(data/cache/agenda_summaries/*.meta.json)
+          metas=(data/cache/editorial_briefings/*.meta.json)
           if [ ${#metas[@]} -eq 0 ]; then
-            echo "No agenda summaries were produced; publishing meeting metadata without bullets."
-            exit 0
+            echo "No editorial metadata was produced."
+            exit 1
           fi
-          # Count items that either have non-empty bullets OR explicit merged>0 (future-proof)
-          n=$(jq -s '[.[] 
-            | select((.ok==true) and ( ((.merged? // 0) | tonumber) > 0 or ((.bullets // []) | length) > 0 ))
-          ] | length' "${metas[@]}")
-          echo "Summaries with bullets (or merged): ${n}/${#metas[@]}"
+          jq -s '{verified: map(select(.status == "verified")) | length,
+                  withheld: map(select(.status == "quality-gate-failed" or .status == "generation-unavailable")) | length,
+                  awaiting_agenda: map(select(.status == "not-published")) | length}' "${metas[@]}"
 
-      - name: Upload data artifact (data/)
+      - name: Upload data artifact
         uses: actions/upload-artifact@v7
         with:
           name: scrape-data
@@ -151,481 +125,21 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: scrape-data
-          path: ./data
+          path: data
 
       - name: Validate downloaded datasets
         run: python scripts/validate_data.py --max-age-hours 2 --min-active 1
 
-      - name: Prepare static site
+      - name: Build editorial briefing site
         run: |
-          mkdir -p _site
-          cp -r data _site/
-          touch _site/.nojekyll
-          
-      - name: Add demo.html to published site
-        run: |
+          python scripts/build_site.py --data-dir data --output-dir _site
           cp demo.html _site/demo.html
 
-
-      - name: Generate index.html from data/meetings.json
+      - name: Sanity-check published files
         run: |
-          python - <<'PY'
-          import json, html, re
-          from datetime import datetime
-          from pathlib import Path
-          from zoneinfo import ZoneInfo
-          
-          data_path = Path("data/meetings.json")
-          out_dir   = Path("_site")
-          (out_dir/"data").mkdir(parents=True, exist_ok=True)
-          
-          # Copy meetings.json into the public _site/data folder
-          out_data_path = out_dir / "data" / "meetings.json"
-          out_data_path.write_text(data_path.read_text(encoding="utf-8"), encoding="utf-8")
-          
-          # Load meetings for the static (no-JS) fallback
-          try:
-              raw = json.loads(data_path.read_text(encoding='utf-8'))
-          except FileNotFoundError:
-              (out_dir/'index.html').write_text(
-                  "<h1>MeetingWatch</h1><p>No meetings.json found.</p>", encoding='utf-8'
-              )
-              raise
-          
-          # meetings may be a list or wrapped (e.g., {"meetings":[...]})
-          if isinstance(raw, list):
-              meetings = raw
-              data_generated_at = ''
-              data_checked_label = 'unknown'
-          else:
-              meetings = raw.get('meetings') or next((v for v in raw.values() if isinstance(v, list)), [])
-              data_generated_at = str(raw.get('generated_at_utc') or '')
-              data_checked_label = str(raw.get('last_checked_mt') or data_generated_at or 'unknown')
-
-          today_mt = datetime.now(ZoneInfo('America/Denver')).date()
-
-          def is_current_or_future(m):
-              try:
-                  return datetime.strptime(str(m.get('date') or ''), '%Y-%m-%d').date() >= today_mt
-              except (TypeError, ValueError):
-                  return False
-
-          # The static fallback follows the same contract as the interactive
-          # Upcoming view: only valid, current/future dated meetings.
-          meetings = [m for m in meetings if is_current_or_future(m)]
-          
-          def sort_key(m):
-              d = (m.get('date') or '')
-              t = m.get('start_time_local') or m.get('start_time') or m.get('time') or ''
-              return (d, t)
-          
-          meetings = sorted(meetings, key=sort_key)
-
-          _KEYWORD_RE = re.compile(r"\b(ordnance|ordinance|resolution|appeal|amendment)s?\b", re.I)
-          _MONEY_RE = re.compile(r"(?:US\$\s*)?\$\s?\d[\d,]*(?:\.\d{2})?(?:\s*(?:million|billion|thousand|m|bn|k))?", re.I)
-
-          def format_bullet_html(text):
-              safe = html.escape(str(text or ""))
-              safe = _KEYWORD_RE.sub(lambda m: f"<strong style=\"font-weight:900 !important;color:#111827\">{m.group(0)}</strong>", safe)
-              safe = _MONEY_RE.sub(lambda m: f"<strong style=\"font-weight:800 !important;color:#15803d\">{m.group(0)}</strong>", safe)
-              return safe
-
-          # ---------- HTML skeleton ----------
-          parts = []
-          parts.append('<!doctype html><meta charset="utf-8"><title>MeetingWatch</title>')
-          parts.append('''<style>
-            :root{--bg:#f8fafc;--card:#fff;--text:#0f172a;--muted:#475569;--line:#e2e8f0;--accent:#0b62d6;--focus:#1d4ed8;}
-            body{font:16px/1.5 system-ui,Segoe UI,Helvetica,Arial;max-width:980px;margin:2rem auto;padding:0 1rem;background:var(--bg);color:var(--text);}
-            h1{margin:0 0 .75rem;font-size:1.8rem;letter-spacing:-.01em;}
-            .m{border:1px solid var(--line);background:var(--card);border-radius:14px;padding:16px;margin:0;box-shadow:0 1px 2px rgba(15,23,42,.04);}
-            .meta{color:var(--muted);font-size:.9rem;line-height:1.4}
-            .run-meta{margin:.25rem 0 .9rem;color:var(--muted);font-size:.92rem}
-            .agenda-missing{color:#b91c1c;font-weight:600}
-            .kw-emph{font-weight:900;color:#111827;background:#fef08a;border-radius:.18em;padding:0 .14em;box-decoration-break:clone;-webkit-box-decoration-break:clone}
-            .money-emph{font-weight:800;color:#15803d}
-            ul{margin:.6rem 0 0 1.15rem;padding:0}
-            li{margin:.28rem 0;max-width:72ch}
-            a{color:var(--accent);text-decoration:none}
-            a:hover{text-decoration:underline}
-            a:focus-visible, select:focus-visible, input:focus-visible{outline:3px solid var(--focus);outline-offset:2px;border-radius:.35rem}
-            #controls{display:grid;gap:.75rem;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));margin:1rem 0 1.25rem;background:var(--bg);padding:.5rem .75rem;border:1px solid var(--line);border-radius:12px;}
-            #controls label select{width:100%;padding:.5rem .6rem;border-radius:.6rem;border:1px solid var(--line);background:#fff}
-            #results{list-style:none;padding:0;display:grid;gap:.9rem;}
-            @media (min-width: 900px){
-              #controls{position:sticky;top:0;z-index:5;box-shadow:0 1px 0 rgba(15,23,42,.03)}
-            }
-            @media (max-width: 640px){
-              body{margin:1rem auto;padding:0 .75rem}
-              #controls{grid-template-columns:1fr;padding:.6rem}
-            }
-          </style>''')
-          
-          parts.append('<h1>MeetingWatch</h1>')
-          parts.append(f'<div class="run-meta" data-run-ts="{html.escape(data_generated_at)}"><strong>Data last checked:</strong> {html.escape(data_checked_label)} <span id="freshnessNote"></span></div>')
-          parts.append('<p><a href="data/meetings.json">Download meetings.json</a> · <a href="data/history.json">Download history.json</a></p>')
-          
-          # Controls + dynamic target
-          parts.append('''
-            <section id="controls">
-              <label><div style="font-weight:600;">View</div>
-                <select id="viewSelect">
-                  <option value="upcoming">Upcoming / Current</option>
-                  <option value="history">History (past 60 days)</option>
-                </select>
-              </label>
-              <label><div style="font-weight:600;">City</div>
-                <select id="citySelect"><option value="">All cities</option></select>
-              </label>
-              <label><div style="font-weight:600;">Source</div>
-                <select id="sourceSelect"><option value="">All sources</option></select>
-              </label>
-              <label style="display:flex;align-items:end;gap:.5rem;">
-                <input id="routineToggle" type="checkbox" />
-                <span style="font-weight:600;">Show routine items</span>
-              </label>
-            </section>
-            <ul id="results"></ul>
-          ''')
-          
-          # ---------- Static fallback (kept for no-JS) ----------
-          parts.append('<noscript><p><em>JavaScript disabled — showing current/future meetings.</em></p></noscript>')
-          parts.append('<div id="static-list">')
-          
-          for m in meetings:
-              city_title = html.escape(m.get('city') or m.get('city_or_body') or m.get('title') or m.get('name') or 'Meeting')
-              date  = html.escape(m.get('date') or '')
-              # keep your previous time fallbacks
-              time  = html.escape(m.get('start_time_local') or m.get('start_time') or m.get('time') or '')
-              loc   = html.escape(m.get('location') or '')
-              agenda_url = m.get('agenda_view_url') or m.get('agenda_url') or m.get('agenda_pdf') or ''
-              agenda_link = f' &middot; <a href="{html.escape(agenda_url)}" target="_blank" rel="noopener">agenda</a>' if agenda_url else ' &middot; <span class="agenda-missing">Agenda not yet published</span>'
-              source_url = m.get('source') or ''
-              source_link = f' &middot; <a href="{html.escape(source_url)}">{html.escape(source_url)}</a>' if source_url else ''
-          
-              bullets = m.get('agenda_summary') or []
-              if isinstance(bullets, str):
-                  bullets = [bullets]
-              bullets = [format_bullet_html(b) for b in bullets]
-          
-              parts.append('<div class="m">')
-              parts.append(f'<div class="meta"><strong>{date}</strong> {time}{agenda_link}{source_link}</div>')
-              parts.append(f'<h3 style="margin:.35rem 0 .4rem">{city_title}</h3>')
-              if loc:
-                  parts.append(f'<div class="meta">{loc}</div>')
-              if bullets:
-                  parts.append('<ul>')
-                  for b in bullets:
-                      parts.append(f'<li>{b}</li>')
-                  parts.append('</ul>')
-
-              docs = m.get('supporting_documents') or []
-              if isinstance(docs, list) and docs:
-                  parts.append('<div class="meta" style="margin-top:.45rem"><strong>Supporting documents</strong></div>')
-                  parts.append('<ul>')
-                  for d in docs:
-                      if isinstance(d, dict) and d.get('url'):
-                          t = html.escape(str(d.get('title') or 'Document'))
-                          u = html.escape(str(d.get('url')))
-                          parts.append(f'<li><a href="{u}" target="_blank" rel="noopener">{t}</a></li>')
-                  parts.append('</ul>')
-              parts.append('</div>')
-          
-          parts.append('</div>')  # /#static-list
-          
-          # ---------- Client-side filters + uniform card header ----------
-          parts.append('''<script>
-          (async function(){
-            const [meetingsRes, historyRes] = await Promise.all([
-              fetch('data/meetings.json', {cache:'no-store'}),
-              fetch('data/history.json', {cache:'no-store'}).catch(() => null),
-            ]);
-            const meetingsRaw = await meetingsRes.json();
-            const historyRaw = historyRes ? await historyRes.json() : { meetings: [] };
-
-            const items = Array.isArray(meetingsRaw) ? meetingsRaw : (meetingsRaw.meetings || []);
-            const rawHistoryItems = Array.isArray(historyRaw) ? historyRaw : (historyRaw.meetings || []);
-            const todayIso = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Denver' });
-            const upcomingItems = items.filter(m => {
-              const d = (m && m.date) ? String(m.date) : '';
-              return /^\\d{4}-\\d{2}-\\d{2}$/.test(d) && d >= todayIso;
-            });
-            const historyItems = rawHistoryItems.filter(m => {
-              const d = (m && m.date) ? String(m.date) : '';
-              return /^\\d{4}-\\d{2}-\\d{2}$/.test(d) && d < todayIso;
-            });
-
-            // Sort by date and time to ensure chronological order
-            upcomingItems.sort((a, b) => {
-              const dateA = a.date || '';
-              const timeA = a.start_time_local || a.start_time || a.time || '';
-              const dateB = b.date || '';
-              const timeB = b.start_time_local || b.start_time || b.time || '';
-            
-              if (dateA < dateB) return -1;
-              if (dateA > dateB) return 1;
-              if (timeA < timeB) return -1;
-              if (timeA > timeB) return 1;
-              return 0;
-            });
-            historyItems.sort((a, b) => {
-              const dateA = a.date || '';
-              const timeA = a.start_time_local || a.start_time || a.time || '';
-              const dateB = b.date || '';
-              const timeB = b.start_time_local || b.start_time || b.time || '';
-
-              if (dateA > dateB) return -1;
-              if (dateA < dateB) return 1;
-              if (timeA > timeB) return -1;
-              if (timeA < timeB) return 1;
-              return 0;
-            });
-          
-            const viewSel = document.getElementById('viewSelect');
-            const citySel = document.getElementById('citySelect');
-            const srcSel  = document.getElementById('sourceSelect');
-            const routineToggle = document.getElementById('routineToggle');
-            const results = document.getElementById('results');
-            const staticList = document.getElementById('static-list');
-            const runMeta = document.querySelector('.run-meta');
-            const freshnessNote = document.getElementById('freshnessNote');
-
-            function relativeFreshness(isoTs){
-              const runMs = Date.parse(isoTs || '');
-              if (!Number.isFinite(runMs)) return ' • freshness unknown';
-              const deltaMin = Math.max(0, Math.floor((Date.now() - runMs) / 60000));
-              if (deltaMin < 1) return ' • updated just now';
-              if (deltaMin < 60) return ` • updated ${deltaMin} min ago`;
-              const hours = Math.floor(deltaMin / 60);
-              if (hours < 24) return ` • updated ${hours} hour${hours === 1 ? '' : 's'} ago`;
-              const days = Math.floor(hours / 24);
-              if (hours >= 36) return ` • ⚠ stale: checked ${days} day${days === 1 ? '' : 's'} ago`;
-              return ` • checked ${days} day${days === 1 ? '' : 's'} ago`;
-            }
-
-            function updateFreshness(){
-              if (!runMeta || !freshnessNote) return;
-              freshnessNote.textContent = relativeFreshness(runMeta.getAttribute('data-run-ts'));
-            }
-          
-            // --- Always show these cities, even if they have (0) meetings right now ---
-            const KNOWN_CITIES = [
-              "Alamosa",
-              "Colorado Springs",
-              "Salida",
-              "Pueblo",
-              "El Paso County",
-              "Trinidad"
-            ];
-
-            function getDataset(){
-              return viewSel.value === 'history' ? historyItems : upcomingItems;
-            }
-
-            function refreshFilterOptions(){
-              const selectedCity = citySel.value;
-              const selectedSource = srcSel.value;
-              const dataset = getDataset();
-
-              const cityCounts = dataset.reduce((acc, x) => {
-                const c = (x.city || '').trim();
-                if (!c) return acc;
-                acc[c] = (acc[c] || 0) + 1;
-                return acc;
-              }, {});
-
-              const cities = Array.from(new Set([
-                ...KNOWN_CITIES,
-                ...Object.keys(cityCounts)
-              ])).sort();
-
-              citySel.innerHTML = '<option value="">All cities</option>';
-              for (const c of cities) {
-                const count = cityCounts[c] || 0;
-                citySel.append(new Option(`${c} (${count})`, c));
-              }
-              citySel.value = cities.includes(selectedCity) ? selectedCity : '';
-
-              const sources = [...new Set(dataset.map(x => ((x.provider || x.source || '')+'').trim()).filter(Boolean))].sort();
-              srcSel.innerHTML = '<option value="">All sources</option>';
-              for (const s of sources) srcSel.append(new Option(s, s));
-              srcSel.value = sources.includes(selectedSource) ? selectedSource : '';
-            }
-
-          
-            // Restore from URL/localStorage
-            const url = new URL(location.href);
-            viewSel.value = url.searchParams.get('view') ?? localStorage.getItem('mw_view') ?? 'upcoming';
-            if (viewSel.value !== 'history' && viewSel.value !== 'upcoming') viewSel.value = 'upcoming';
-            refreshFilterOptions();
-            citySel.value = url.searchParams.get('city') ?? localStorage.getItem('mw_city') ?? citySel.value ?? '';
-            srcSel.value  = url.searchParams.get('source') ?? localStorage.getItem('mw_source') ?? srcSel.value ?? '';
-            routineToggle.checked = (url.searchParams.get('showRoutine') ?? localStorage.getItem('mw_showRoutine') ?? '0') === '1';
-            updateFreshness();
-          
-            function inferType(title=''){
-              const t = String(title).toLowerCase();
-              if (t.includes('work'))   return 'Work Session';
-              if (t.includes('special'))return 'Special Meeting';
-              if (t.includes('regular'))return 'City Council Regular Meeting';
-              if (t.includes('council'))return 'City Council Meeting';
-              return 'Meeting';
-            }
-            function formatWhen(m){
-              const d = m.date || '';
-              const t = m.start_time_local || m.start_time || m.time || '';
-              const tz = m.tz ? (' ' + String(m.tz).replace('America/','')) : '';
-              if (d && t) return d + ' • ' + t + tz;
-              if (d) return d;
-              if (t) return t + tz;
-              return '';
-            }
-            function cardTitle(m){
-              return m.city || m.city_or_body || m.title || 'Meeting';
-            }
-            function headerLine(m){
-              const agendaHref = safeHref(m.agenda_view_url || m.agenda_url || m.agenda_pdf || '');
-              const agenda = agendaHref
-                ? '<a href="'+agendaHref+'" target="_blank" rel="noopener">📝 Agenda</a>'
-                : '<span class="agenda-missing">Agenda not yet published</span>';
-              const sourceHref = safeHref(m.source);
-              const source = sourceHref ? '<a href="'+sourceHref+'" target="_blank" rel="noopener">🌐 Source</a>' : '';
-              const type = '📌 ' + escapeHtml(m.meeting_type || inferType(m.title||''));
-              const statusRaw = String(m.status || 'Scheduled');
-              const isCanceled = /cancel/i.test(statusRaw);
-              const status = isCanceled ? '⛔ Canceled' : ('✅ ' + escapeHtml(statusRaw));
-              const when = (function(w){ return w ? '🕒 ' + escapeHtml(w) : ''; })(formatWhen(m));
-              return [status, agenda, source, type, when].filter(Boolean).join('  •  ');
-            }
-            function escapeHtml(s){
-              return String(s || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-            }
-            function safeHref(value){
-              try {
-                const parsed = new URL(String(value || ''), location.href);
-                return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? escapeHtml(parsed.href) : '';
-              } catch (_) {
-                return '';
-              }
-            }
-            function styleBulletText(text){
-              let safe = escapeHtml(String(text || ''));
-              safe = safe.replace(/\\b(ordnance|ordinance|resolution|appeal|amendment)s?\\b/gi, '<strong style="font-weight:900 !important;color:#111827">$&</strong>');
-              safe = safe.replace(/(?:US\\$\\s*)?\\$\\s?\\d[\\d,]*(?:\\.\\d{2})?(?:\\s*(?:million|billion|thousand|m|bn|k))?/gi, '<strong style="font-weight:800 !important;color:#15803d">$&</strong>');
-              return safe;
-            }
-            function _normWords(s){
-              return String(s || '').toLowerCase().replace(/[^a-z0-9\\s]/g, ' ').split(/\\s+/).filter(w => w.length >= 4);
-            }
-            function _docLinksForBullet(bullet, docs){
-              const words = new Set(_normWords(bullet));
-              const matches = docs.filter(d => {
-                const titleWords = _normWords(d.title || '');
-                return titleWords.some(w => words.has(w));
-              });
-              return matches;
-            }
-            function supportingDocsUnmatchedHTML(docs){
-              if (!docs.length) return '';
-              const links = docs.map(d => {
-                const href = safeHref(d.url);
-                return href ? '<li><a href="'+href+'" target="_blank" rel="noopener">'+escapeHtml(d.title || 'Document')+'</a></li>' : '';
-              }).join('');
-              return '<div class="meta" style="margin-top:.45rem"><strong>Supporting documents</strong></div><ul>'+links+'</ul>';
-            }
-            function bulletsHTML(m, showRoutine){
-              const keep = Array.isArray(m.agenda_summary) ? m.agenda_summary
-                         : (typeof m.agenda_summary === 'string' ? m.agenda_summary.split(/\\n+/).filter(Boolean) : []);
-              const routine = Array.isArray(m.agenda_summary_routine) ? m.agenda_summary_routine
-                            : (typeof m.agenda_summary_routine === 'string' ? m.agenda_summary_routine.split(/\\n+/).filter(Boolean) : []);
-              const docs = (Array.isArray(m.supporting_documents) ? m.supporting_documents : []).filter(d => d && d.url);
-
-              const usedDocUrls = new Set();
-              const keepItems = keep.map(b => {
-                const linked = _docLinksForBullet(b, docs).filter(d => !usedDocUrls.has(d.url));
-                linked.forEach(d => usedDocUrls.add(d.url));
-                const linksHtml = linked.length
-                  ? '<ul style="margin-top:.3rem">' + linked.map(d => {
-                      const href = safeHref(d.url);
-                      return href ? '<li><a href="'+href+'" target="_blank" rel="noopener">'+escapeHtml(d.title || 'Document')+'</a></li>' : '';
-                    }).join('') + '</ul>'
-                  : '';
-                return '<li>'+styleBulletText(b)+linksHtml+'</li>';
-              });
-
-              const keepHtml = keepItems.length ? '<ul>' + keepItems.join('') + '</ul>' : '';
-              const unmatchedDocs = docs.filter(d => !usedDocUrls.has(d.url));
-              const docsHtml = supportingDocsUnmatchedHTML(unmatchedDocs);
-
-              if (!showRoutine || !routine.length) return keepHtml + docsHtml;
-              const routineHtml = '<details style="margin-top:.4rem"><summary style="cursor:pointer;color:#666">Routine items ('+routine.length+')</summary><ul style="color:#666">' + routine.map(b => '<li>'+styleBulletText(b)+'</li>').join('') + '</ul></details>';
-              return keepHtml + routineHtml + docsHtml;
-            }
-            function syncState(){
-              const v = viewSel.value, c = citySel.value, s = srcSel.value, showRoutine = routineToggle.checked;
-              localStorage.setItem('mw_view', v);
-              localStorage.setItem('mw_city', c);
-              localStorage.setItem('mw_source', s);
-              localStorage.setItem('mw_showRoutine', showRoutine ? '1' : '0');
-              const u = new URL(location.href);
-              v ? u.searchParams.set('view', v) : u.searchParams.delete('view');
-              c ? u.searchParams.set('city', c) : u.searchParams.delete('city');
-              s ? u.searchParams.set('source', s) : u.searchParams.delete('source');
-              showRoutine ? u.searchParams.set('showRoutine', '1') : u.searchParams.delete('showRoutine');
-              history.replaceState({}, '', u);
-            }
-            function render(){
-              syncState();
-              const dataset = getDataset();
-              const c = citySel.value, s = srcSel.value, showRoutine = routineToggle.checked;
-              const filtered = dataset.filter(m =>
-                (!c || (m.city||'') === c) && (!s || (((m.provider || m.source || '')+'') === s))
-              );
-              results.innerHTML = '';
-              // JavaScript is working, so the no-JS fallback must stay hidden
-              // even when the selected filters have no matches.
-              staticList.style.display = 'none';
-              if (!filtered.length){
-                results.innerHTML = '<li style="opacity:.75;">No results match your filters.</li>';
-                return;
-              }
-          
-              for (const m of filtered){
-                const href = safeHref(m.url || m.source || m.agenda_url || '') || '#';
-                const li = document.createElement('li');
-                li.className = 'm';
-                li.innerHTML = `
-                  <div style="font-weight:750;font-size:1.04rem;margin-bottom:.32rem;line-height:1.3;">
-                    <a href="${href}" target="_blank" rel="noopener">${escapeHtml(cardTitle(m))}</a>
-                  </div>
-                  <div class="meta" style="margin-bottom:.48rem;display:flex;flex-wrap:wrap;gap:.38rem .62rem;">
-                    ${headerLine(m)}
-                  </div>
-                  ${bulletsHTML(m, showRoutine)}
-                `;
-                results.appendChild(li);
-              }
-            }
-            viewSel.addEventListener('change', () => { refreshFilterOptions(); render(); });
-            citySel.addEventListener('change', render);
-            srcSel.addEventListener('change', render);
-            routineToggle.addEventListener('change', render);
-            setInterval(updateFreshness, 60000);
-            render();
-          })();
-          </script>''')
-          
-          (out_dir/'index.html').write_text('\n'.join(parts), encoding='utf-8')
-          PY
-
-
-      - name: "Sanity check: history file is published"
-        run: |
-          test -s _site/data/history.json || (echo "ERROR: _site/data/history.json missing" && exit 1)
-
-      - name: List built site (debug)
-        run: |
-          echo "Built site contents:"
-          find _site -maxdepth 3 -type f -print
+          test -s _site/index.html
+          test -s _site/data/meetings.json
+          test -s _site/data/history.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
