@@ -51,3 +51,42 @@ def test_invalid_dates_and_expired_history_fail():
 
     assert any("missing/invalid date" in error for error in errors)
     assert any("exceeds 60-day retention" in error for error in errors)
+
+
+def test_verified_editorial_briefing_requires_evidence_and_provenance():
+    meetings, history = _payloads()
+    meetings["meetings"][0].update(
+        {
+            "agenda_briefing_status": "verified",
+            "agenda_briefing": {
+                "overview": "A decision is scheduled.",
+                "items": [
+                    {
+                        "headline": "Decision",
+                        "action": "Council will consider it.",
+                        "why_it_matters": "It changes city policy.",
+                        "evidence": "consider the ordinance",
+                        "priority": "top",
+                    }
+                ],
+            },
+            "agenda_briefing_provenance": {"validation": "source-grounded"},
+        }
+    )
+    assert validate_payloads(
+        meetings, history, now_utc=NOW, max_age_hours=36, min_active=1
+    ) == []
+
+
+def test_unverified_editorial_content_cannot_leak_into_public_data():
+    meetings, history = _payloads()
+    meetings["meetings"][0].update(
+        {
+            "agenda_briefing_status": "quality-gate-failed",
+            "agenda_summary": ["Unverified claim"],
+        }
+    )
+    errors = validate_payloads(
+        meetings, history, now_utc=NOW, max_age_hours=36, min_active=1
+    )
+    assert any("unverified legacy summary must be empty" in error for error in errors)

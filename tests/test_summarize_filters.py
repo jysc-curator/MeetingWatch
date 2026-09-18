@@ -47,7 +47,7 @@ class TestSummaryFiltering(unittest.TestCase):
             "The case discussed in executive session is Smith v. City, Case No. 2026CV12345.",
         ]
         out = _clean_summary_bullets(bullets, meeting, max_bullets=10)
-        self.assertIn("An executive session is scheduled to discuss confidential matters.", out)
+        self.assertNotIn("An executive session is scheduled to discuss confidential matters.", out)
         self.assertIn("The case discussed in executive session is Smith v. City, Case No. 2026CV12345.", out)
 
     def test_drops_new_routine_patterns(self):

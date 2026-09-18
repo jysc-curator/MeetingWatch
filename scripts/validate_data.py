@@ -53,6 +53,41 @@ def _identity(meeting: dict) -> str:
     )
 
 
+def _validate_editorial(meeting: dict, label: str) -> list[str]:
+    """Validate the public trust contract when editorial fields are present."""
+    errors: list[str] = []
+    status = meeting.get("agenda_briefing_status")
+    if status is None:
+        return errors
+    briefing = meeting.get("agenda_briefing")
+    legacy = meeting.get("agenda_summary") or []
+    provenance = meeting.get("agenda_briefing_provenance") or {}
+    if status == "verified":
+        if not isinstance(briefing, dict):
+            return [f"{label}: verified briefing is missing"]
+        items = briefing.get("items")
+        if not isinstance(items, list) or not 1 <= len(items) <= 8:
+            errors.append(f"{label}: verified briefing must contain 1-8 stories")
+        else:
+            for item_index, item in enumerate(items):
+                if not isinstance(item, dict):
+                    errors.append(f"{label}: briefing item {item_index} is not an object")
+                    continue
+                for field in ("headline", "action", "why_it_matters", "evidence"):
+                    if not str(item.get(field) or "").strip():
+                        errors.append(f"{label}: briefing item {item_index} lacks {field}")
+                if item.get("priority") not in {"top", "notable"}:
+                    errors.append(f"{label}: briefing item {item_index} has invalid priority")
+        if provenance.get("validation") != "source-grounded":
+            errors.append(f"{label}: verified briefing lacks source-grounded provenance")
+    else:
+        if briefing:
+            errors.append(f"{label}: unverified briefing must not be published")
+        if legacy:
+            errors.append(f"{label}: unverified legacy summary must be empty")
+    return errors
+
+
 def validate_payloads(
     meetings_payload: dict,
     history_payload: dict,
@@ -106,6 +141,7 @@ def validate_payloads(
         if identity in active_ids:
             errors.append(f"meetings.json: duplicate meeting identity {identity!r}")
         active_ids.add(identity)
+        errors.extend(_validate_editorial(meeting, f"meetings.json: meetings[{index}]"))
 
     retention_days = int(history_payload.get("retention_days") or 60)
     cutoff = today_denver - timedelta(days=retention_days)
