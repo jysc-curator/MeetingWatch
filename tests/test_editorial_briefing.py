@@ -75,3 +75,23 @@ def test_validator_rejects_omitted_material_amounts():
 
 def test_material_amounts_are_ranked_and_deduplicated():
     assert _material_amounts(SOURCE)[:3] == ["$330,000,000", "$225,000,000", "$140,000,000"]
+
+
+def test_validator_tolerates_pdf_typography_variants_in_verbatim_evidence():
+    raw = {
+        "overview": "Council will consider utility borrowing.",
+        "items": [
+            _item(),
+            _item(
+                headline="New utility bonds include $330 million and $140 million",
+                action="Ordinance 26-50 would authorize $330,000,000 tax-exempt and $140,000,000 taxable bonds.",
+                agenda_item="8.B",
+                key_facts=["$330,000,000 tax-exempt", "$140,000,000 taxable"],
+                evidence="Ordinance 26‑50 authorizes $330,000,000 in tax‑exempt bonds and $140,000,000 in taxable bonds",
+            ),
+        ],
+        "routine_items": [],
+    }
+    briefing, errors = _validate_briefing(raw, SOURCE)
+    assert errors == []
+    assert briefing["items"][1]["source_page"] == 6
