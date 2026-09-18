@@ -27,7 +27,7 @@ MAX_BULLETS = int(os.getenv("PDF_SUMMARY_MAX_BULLETS", "8"))
 DEFAULT_MAX_CHARS = int(os.getenv("PDF_SUMMARY_MAX_CHARS", "90000"))
 SUMMARIZER_MODEL = os.getenv("SUMMARIZER_MODEL", "gpt-5-mini")
 DEBUG = os.getenv("PDF_SUMMARY_DEBUG", "0") == "1"
-PROMPT_VERSION = "editorial-briefing-v3"
+PROMPT_VERSION = "editorial-briefing-v4"
 MATERIAL_AMOUNT_THRESHOLD = int(os.getenv("EDITORIAL_MATERIAL_AMOUNT_USD", "100000"))
 MAX_MATERIAL_AMOUNTS = int(os.getenv("EDITORIAL_MAX_MATERIAL_AMOUNTS", "10"))
 UA = {"User-Agent": "MeetingWatch/2.0 (+https://github.com/jysc-curator/MeetingWatch)"}
@@ -308,8 +308,8 @@ def _numeric_token_supported(token: str, source: str) -> bool:
         if token_match:
             target = _parse_money(token_match)
             return any(_parse_money(match) == target for match in _MONEY_RE.finditer(source))
-    compact = token.lower().replace(" ", "").replace(",", "")
-    source_compact = source.lower().replace(" ", "").replace(",", "")
+    compact = re.sub(r"\s+", "", token.lower()).replace(",", "")
+    source_compact = re.sub(r"\s+", "", source.lower()).replace(",", "")
     return compact in source_compact
 
 
@@ -326,6 +326,68 @@ def _evidence_key(text: str) -> str:
         )
     )
     return re.sub(r"\s+", " ", value).strip()
+
+
+_EDITORIAL_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "city", "consider",
+    "for", "from", "in", "is", "it", "meeting", "of", "on", "or", "the",
+    "this", "to", "will", "with",
+}
+
+
+def _editorial_words(text: str) -> set[str]:
+    return {
+        word for word in re.findall(r"[a-z0-9]+", _evidence_key(text))
+        if len(word) >= 3 and word not in _EDITORIAL_STOP_WORDS
+    }
+
+
+def _recover_evidence(item: Dict[str, Any], source: str) -> Tuple[Optional[str], Optional[int]]:
+    """Select a verbatim source block when model-supplied evidence is near-verbatim."""
+    query = " ".join(
+        [
+            item.get("headline") or "",
+            item.get("action") or "",
+            item.get("why_it_matters") or "",
+            " ".join(item.get("key_facts") or []),
+            item.get("evidence") or "",
+        ]
+    )
+    query_words = _editorial_words(query)
+    if not query_words:
+        return None, None
+    item_ids = re.findall(r"\b\d+(?:\.[A-Za-z0-9]+)+\b", str(item.get("agenda_item") or ""))
+    query_numbers = list(dict.fromkeys(_NUMBER_RE.findall(query)))
+    candidates: List[Tuple[float, str, int]] = []
+
+    for page_match in re.finditer(r"\[PAGE (\d+)\]\s*(.*?)(?=\[PAGE \d+\]|\Z)", source, re.S):
+        page = int(page_match.group(1))
+        paragraphs = [
+            _normalize_ws(part)
+            for part in re.split(r"\n\s*\n", page_match.group(2))
+            if _normalize_ws(part)
+        ]
+        for start in range(len(paragraphs)):
+            for width in range(1, min(6, len(paragraphs) - start + 1)):
+                block = " ".join(paragraphs[start : start + width])
+                if len(block) > 3000:
+                    break
+                block_words = _editorial_words(block)
+                shared = len(query_words & block_words)
+                if shared < 3:
+                    continue
+                overlap = shared / max(1, len(query_words))
+                id_hits = sum(1 for item_id in item_ids if _evidence_key(item_id) in _evidence_key(block))
+                number_hits = sum(1 for number in query_numbers if _numeric_token_supported(number, block))
+                score = overlap + (id_hits * 0.9) + (number_hits * 0.12)
+                candidates.append((score, block, page))
+
+    if not candidates:
+        return None, None
+    score, block, page = max(candidates, key=lambda candidate: candidate[0])
+    if score < 0.28:
+        return None, None
+    return block, page
 
 
 def _page_for_excerpt(source: str, excerpt: str) -> Optional[int]:
@@ -374,13 +436,19 @@ def _validate_briefing(raw: Dict[str, Any], source: str) -> Tuple[Dict[str, Any]
             errors.append(f"duplicate headline: {item['headline']}")
             continue
         seen.add(key)
-        if "[page " in item["evidence"].lower() or len(item["evidence"]) > 1800:
-            errors.append(f"evidence is not a compact source excerpt for: {item['headline']}")
-            continue
-        if _evidence_key(item["evidence"]) not in source_evidence_key:
-            errors.append(f"evidence not found verbatim for: {item['headline']}")
-            continue
-        actual_page = _page_for_excerpt(source, item["evidence"])
+        evidence_is_direct = (
+            "[page " not in item["evidence"].lower()
+            and len(item["evidence"]) <= 3000
+            and _evidence_key(item["evidence"]) in source_evidence_key
+        )
+        actual_page = _page_for_excerpt(source, item["evidence"]) if evidence_is_direct else None
+        if not evidence_is_direct:
+            recovered, recovered_page = _recover_evidence(item, source)
+            if not recovered:
+                errors.append(f"could not anchor source evidence for: {item['headline']}")
+                continue
+            item["evidence"] = recovered
+            actual_page = recovered_page
         if actual_page:
             item["source_page"] = actual_page
         elif "[PAGE " not in source:
@@ -438,6 +506,13 @@ def _call_openai(source: str, model: str, correction: str = "") -> Tuple[Dict[st
     request_text = (
         "Create the editorial briefing from the agenda below.\n"
         + (f"A prior draft failed validation. Correct these issues: {correction}\n" if correction else "")
+        + (
+            "The final briefing MUST explicitly cover these material amounts, grouping related actions when useful: "
+            + ", ".join(_material_amounts(source))
+            + ".\n"
+            if _material_amounts(source)
+            else ""
+        )
         + "\nAGENDA SOURCE BEGIN\n" + source[:DEFAULT_MAX_CHARS] + "\nAGENDA SOURCE END"
     )
     response = client.responses.create(
