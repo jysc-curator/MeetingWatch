@@ -1,5 +1,5 @@
 import scraper.summarize as summarizer
-from scraper.summarize import _material_amounts, _validate_briefing
+from scraper.summarize import _coverage_warnings, _material_amounts, _validate_briefing
 
 
 SOURCE = """[PAGE 6]
@@ -73,6 +73,20 @@ def test_validator_does_not_require_unselected_agenda_amounts():
     }
     _, errors = _validate_briefing(raw, SOURCE)
     assert errors == []
+
+
+def test_unselected_major_amounts_are_coverage_warnings_not_safety_failures():
+    raw = {
+        "overview": "Council will consider utility borrowing.",
+        "items": [_item()],
+        "routine_items": [],
+    }
+    briefing, errors = _validate_briefing(raw, SOURCE)
+    assert errors == []
+    warnings = _coverage_warnings(briefing, SOURCE)
+    assert len(warnings) == 1
+    assert "$330,000,000" in warnings[0]
+    assert "$140,000,000" in warnings[0]
 
 
 def test_validator_rejects_amount_omitted_from_selected_item():
@@ -263,3 +277,43 @@ N11  An Ordinance transferring $400,000 from the Airport Fund to Project CI2621 
     assert result.briefing["items"][0]["agenda_item"] == "M8"
     assert "$1,300,000" not in result.briefing["overview"]
     assert "discarded draft content" in result.reason
+
+
+def test_summarizer_retries_to_restore_major_amount_coverage(monkeypatch, tmp_path):
+    first_draft = {
+        "overview": "Council will consider utility borrowing.",
+        "items": [_item()],
+        "routine_items": [],
+    }
+    complete_draft = {
+        "overview": "Council will consider three utility bond authorizations.",
+        "items": [
+            _item(),
+            _item(
+                headline="New utility bonds include $330 million and $140 million",
+                action="Ordinance 26-50 would authorize $330,000,000 tax-exempt and $140,000,000 taxable bonds.",
+                agenda_item="8.B",
+                key_facts=["$330,000,000 tax-exempt", "$140,000,000 taxable"],
+                evidence="Ordinance 26-50 authorizes $330,000,000 in tax-exempt bonds and $140,000,000 in taxable bonds",
+            ),
+        ],
+        "routine_items": [],
+    }
+    drafts = iter([first_draft, complete_draft])
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(summarizer, "_fetch_text_url", lambda _url: (SOURCE, ""))
+    monkeypatch.setattr(
+        summarizer,
+        "_call_openai",
+        lambda *_args, **_kwargs: (next(drafts), "test"),
+    )
+
+    result = summarizer.summarize_meeting(
+        {"agenda_text_url": "https://example.test/agenda.txt"},
+        cache_dir=tmp_path,
+    )
+
+    assert result.ok is True
+    assert result.attempts == 2
+    assert result.reason == ""
+    assert len(result.briefing["items"]) == 2
