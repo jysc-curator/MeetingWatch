@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 """
-Colorado Springs Legistar scraper (v1.3.1)
+Colorado Springs Legistar scraper (v1.4.0)
 ------------------------------------------
 - Fetches upcoming events (next 120 days) from Legistar Web API
 - Normalizes meeting start time:
@@ -23,17 +23,26 @@ from typing import List, Dict, Optional
 import io
 import re
 import logging
+from urllib.parse import urljoin
 
 import requests
 import pytz
 from bs4 import BeautifulSoup
 
+try:
+    from playwright.sync_api import sync_playwright
+except Exception:  # pragma: no cover - exercised only when Playwright is absent
+    sync_playwright = None
+
 from .utils import make_meeting, clean_text, summarize_pdf_if_any
 
 MT = pytz.timezone("America/Denver")
 API = "https://webapi.legistar.com/v1/coloradosprings/events"
+CALENDAR_URL = "https://coloradosprings.legistar.com/Calendar.aspx"
+SCHEDULE_HORIZON_DAYS = 120
+CALENDAR_BODIES = ("City Council", "City Council Work Session")
 UA = (
-    "MeetingWatch/1.3.1 (+https://human83.github.io/MeetingWatch/; contact: meetingwatch@example.com) "
+    "MeetingWatch/1.4.0 (+https://jysc-curator.github.io/MeetingWatch/) "
     "Python-requests"
 )
 
@@ -264,19 +273,60 @@ def _filter_bullets(bullets: List[str], *, limit: int = BULLET_LIMIT) -> List[st
             break
     return soft
 
-def _parse_calendar_fallback(today_date) -> List[Dict]:
-    """
-    Fallback scraper for Calendar.aspx rows, used when upcoming council events are not
-    exposed by the Legistar Web API (common when agendas are not yet published).
-    """
-    out: List[Dict] = []
-    url = "https://coloradosprings.legistar.com/Calendar.aspx"
-    try:
-      html = requests.get(url, headers={"User-Agent": UA}, timeout=30).text
-    except Exception as e:
-      _LOG.warning("Calendar fallback fetch failed: %s", e)
-      return out
+def _select_legistar_filter(page, *, control: str, value: str) -> None:
+    """Select a Telerik RadComboBox value and wait for its postback to finish."""
+    input_selector = f"#ctl00_ContentPlaceHolder1_{control}_Input"
+    arrow_selector = f"#ctl00_ContentPlaceHolder1_{control}_Arrow"
+    dropdown_selector = f"#ctl00_ContentPlaceHolder1_{control}_DropDown"
 
+    page.locator(arrow_selector).click()
+    page.locator(dropdown_selector).get_by_text(value, exact=True).click()
+    page.wait_for_function(
+        "([selector, expected]) => document.querySelector(selector)?.value === expected",
+        arg=[input_selector, value],
+    )
+    page.wait_for_load_state("networkidle")
+
+
+def _calendar_html_pages(today_date, end_date) -> List[str]:
+    """
+    Load official calendar pages for every year/body intersecting the horizon.
+
+    Legistar's unauthenticated API often omits meetings until an agenda exists.
+    Calendar.aspx contains those scheduled records, but its plain GET defaults to
+    "This Month".  Selecting an explicit year and body avoids that hidden horizon
+    and also keeps each Telerik grid below its pagination threshold.
+    """
+    if sync_playwright is None:
+        return []
+
+    pages: List[str] = []
+    years = range(today_date.year, end_date.year + 1)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            # Keep Chromium's normal browser UA. Legistar serves a degraded
+            # widget when given the requests-oriented crawler UA above.
+            page = browser.new_page()
+            for year in years:
+                for body in CALENDAR_BODIES:
+                    # Telerik attaches its RadComboBox handlers after DOMContentLoaded;
+                    # wait for network idle so clicking the arrow opens the live menu.
+                    page.goto(CALENDAR_URL, wait_until="networkidle", timeout=45_000)
+                    _select_legistar_filter(page, control="lstYears", value=str(year))
+                    _select_legistar_filter(page, control="lstBodies", value=body)
+                    page.locator("#ctl00_ContentPlaceHolder1_gridCalendar_ctl00").wait_for(
+                        state="attached", timeout=30_000
+                    )
+                    pages.append(page.content())
+        finally:
+            browser.close()
+    return pages
+
+
+def _parse_calendar_html(html: str, *, today_date, end_date) -> List[Dict]:
+    """Parse scheduled Council rows from one filtered Calendar.aspx document."""
+    out: List[Dict] = []
     soup = BeautifulSoup(html, "html.parser")
     for tr in soup.find_all("tr"):
       tds = tr.find_all("td")
@@ -284,7 +334,7 @@ def _parse_calendar_fallback(today_date) -> List[Dict]:
         continue
 
       dept = clean_text(tds[0].get_text(" ", strip=True))
-      if dept not in {"City Council", "City Council Work Session"}:
+      if dept not in CALENDAR_BODIES:
         continue
 
       date_text = clean_text(tds[1].get_text(" ", strip=True))
@@ -302,8 +352,16 @@ def _parse_calendar_fallback(today_date) -> List[Dict]:
       except Exception:
         continue
 
-      if parsed_date < today_date:
+      if parsed_date < today_date or parsed_date > end_date:
         continue
+
+      agenda_url = None
+      for link in tr.find_all("a", href=True):
+        href = str(link.get("href") or "")
+        label = clean_text(link.get_text(" ", strip=True)).lower()
+        if "agenda" in label and "accessible" not in label:
+          agenda_url = urljoin(CALENDAR_URL, href)
+          break
 
       mtg_type = "City Council Work Session" if "work session" in dept.lower() else "City Council Meeting"
 
@@ -315,13 +373,44 @@ def _parse_calendar_fallback(today_date) -> List[Dict]:
           start_time_local=time_text,
           status=status,
           location=location_text,
-          agenda_url=None,
+          agenda_url=agenda_url,
           agenda_summary=[],
-          source=url,
+          source=CALENDAR_URL,
         )
       )
-
     return out
+
+
+def _parse_calendar_fallback(today_date, end_date=None, *, html_pages=None) -> List[Dict]:
+    """
+    Fallback scraper for Calendar.aspx rows, used when upcoming council events are not
+    exposed by the Legistar Web API (common when agendas are not yet published).
+    """
+    end_date = end_date or (today_date + timedelta(days=SCHEDULE_HORIZON_DAYS))
+    if html_pages is None:
+        try:
+            html_pages = _calendar_html_pages(today_date, end_date)
+        except Exception as exc:
+            _LOG.warning("Expanded Calendar.aspx sweep failed: %s", exc)
+            html_pages = []
+
+        # Preserve a dependency-light fallback. It only exposes the site's
+        # default month, but is still useful if Chromium is temporarily absent.
+        if not html_pages:
+            try:
+                response = requests.get(CALENDAR_URL, headers={"User-Agent": UA}, timeout=30)
+                response.raise_for_status()
+                html_pages = [response.text]
+            except Exception as exc:
+                _LOG.warning("Calendar fallback fetch failed: %s", exc)
+                return []
+
+    meetings: List[Dict] = []
+    for html in html_pages:
+        meetings.extend(
+            _parse_calendar_html(html, today_date=today_date, end_date=end_date)
+        )
+    return _merge_duplicate_meetings(meetings)
 
 # --- Main --------------------------------------------------------------------
 
@@ -362,7 +451,7 @@ def parse_legistar() -> List[Dict]:
     Returns a list of dicts created by utils.make_meeting.
     """
     today = datetime.now(MT).date()
-    in_120 = today + timedelta(days=120)
+    in_120 = today + timedelta(days=SCHEDULE_HORIZON_DAYS)
     
     # Collect from *today* at 00:00 forward (no past days)
     start = today.strftime("%Y-%m-%dT00:00:00")
@@ -450,7 +539,7 @@ def parse_legistar() -> List[Dict]:
         )
 
     # Fallback: include Calendar.aspx-only upcoming council events (often no agenda yet)
-    fallback_meetings = _parse_calendar_fallback(today)
+    fallback_meetings = _parse_calendar_fallback(today, in_120)
     meetings.extend(fallback_meetings)
 
     merged = _merge_duplicate_meetings(meetings)

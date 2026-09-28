@@ -90,3 +90,46 @@ def test_unverified_editorial_content_cannot_leak_into_public_data():
         meetings, history, now_utc=NOW, max_age_hours=36, min_active=1
     )
     assert any("unverified legacy summary must be empty" in error for error in errors)
+
+
+def test_source_coverage_counts_and_horizon_are_validated():
+    meetings, history = _payloads()
+    meetings["meetings"][0]["city"] = "Colorado Springs"
+    meetings["source_coverage"] = {
+        "policy": {
+            "basis": "officially-published-dates-only",
+            "horizon_days": 120,
+            "inferred_recurring_dates": False,
+        },
+        "warnings": [],
+        "sources": {
+            city: {
+                "scrape_status": "ok",
+                "published_card_count": 1 if city == "Colorado Springs" else 0,
+                "agenda_published_count": 0,
+                "agenda_pending_count": 1 if city == "Colorado Springs" else 0,
+                "scheduled_from": "2026-09-19" if city == "Colorado Springs" else None,
+                "scheduled_through": "2026-09-19" if city == "Colorado Springs" else None,
+            }
+            for city in (
+                "Alamosa",
+                "Colorado Springs",
+                "El Paso County",
+                "Pueblo",
+                "Salida",
+                "Trinidad",
+            )
+        },
+    }
+
+    assert validate_payloads(
+        meetings, history, now_utc=NOW, max_age_hours=36, min_active=1
+    ) == []
+
+    meetings["source_coverage"]["sources"]["Colorado Springs"][
+        "agenda_pending_count"
+    ] = 0
+    errors = validate_payloads(
+        meetings, history, now_utc=NOW, max_age_hours=36, min_active=1
+    )
+    assert any("agenda_pending_count does not match" in error for error in errors)
