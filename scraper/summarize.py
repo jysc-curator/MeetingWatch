@@ -27,9 +27,10 @@ MAX_BULLETS = int(os.getenv("PDF_SUMMARY_MAX_BULLETS", "8"))
 DEFAULT_MAX_CHARS = int(os.getenv("PDF_SUMMARY_MAX_CHARS", "90000"))
 SUMMARIZER_MODEL = os.getenv("SUMMARIZER_MODEL", "gpt-5-mini")
 DEBUG = os.getenv("PDF_SUMMARY_DEBUG", "0") == "1"
-PROMPT_VERSION = "editorial-briefing-v5"
+PROMPT_VERSION = "editorial-briefing-v6"
 MATERIAL_AMOUNT_THRESHOLD = int(os.getenv("EDITORIAL_MATERIAL_AMOUNT_USD", "100000"))
 MAX_MATERIAL_AMOUNTS = int(os.getenv("EDITORIAL_MAX_MATERIAL_AMOUNTS", "10"))
+MAX_COVERAGE_AMOUNTS = int(os.getenv("EDITORIAL_MAX_COVERAGE_AMOUNTS", "5"))
 UA = {"User-Agent": "MeetingWatch/2.0 (+https://github.com/jysc-curator/MeetingWatch)"}
 
 
@@ -299,6 +300,11 @@ def _material_amounts(text: str) -> List[str]:
     return [display for display, _ in ordered[:MAX_MATERIAL_AMOUNTS]]
 
 
+def _coverage_amounts(text: str) -> List[str]:
+    """Return the largest amounts the editorial draft should try to cover."""
+    return _material_amounts(text)[:MAX_COVERAGE_AMOUNTS]
+
+
 def _normal_money(text: str) -> str:
     return text.lower().replace(" ", "").replace(",", "").replace("$", "")
 
@@ -538,6 +544,26 @@ def _validate_briefing(raw: Dict[str, Any], source: str) -> Tuple[Dict[str, Any]
     }, errors
 
 
+def _coverage_warnings(briefing: Dict[str, Any], source: str) -> List[str]:
+    """Flag major source amounts absent from otherwise safe editorial stories."""
+    editorial_fields: List[str] = [str(briefing.get("overview") or "")]
+    for item in briefing.get("items") or []:
+        editorial_fields.extend(
+            [
+                str(item.get("headline") or ""),
+                str(item.get("action") or ""),
+                str(item.get("why_it_matters") or ""),
+                " ".join(str(value) for value in item.get("key_facts") or []),
+            ]
+        )
+    rendered = " ".join(editorial_fields)
+    missing = [
+        amount for amount in _coverage_amounts(source)
+        if _normal_money(amount) not in _normal_money(rendered)
+    ]
+    return ["editorial coverage targets omitted: " + ", ".join(missing)] if missing else []
+
+
 def _response_schema() -> Dict[str, Any]:
     return {
         "type": "json_schema",
@@ -551,9 +577,18 @@ def _call_openai(source: str, model: str, correction: str = "") -> Tuple[Dict[st
     from openai import OpenAI  # type: ignore
 
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=150.0, max_retries=1)
+    coverage_amounts = _coverage_amounts(source)
     request_text = (
         "Create the editorial briefing from the agenda below.\n"
         + (f"A prior draft failed validation. Correct these issues: {correction}\n" if correction else "")
+        + (
+            "Editorial coverage targets: include the agenda actions associated with these major amounts: "
+            + ", ".join(coverage_amounts)
+            + ". If amounts belong to separate agenda identifiers or source passages, write separate stories; "
+            "never combine them into a calculated total.\n"
+            if coverage_amounts
+            else ""
+        )
         + "\nAGENDA SOURCE BEGIN\n" + source[:DEFAULT_MAX_CHARS] + "\nAGENDA SOURCE END"
     )
     response = client.responses.create(
@@ -653,18 +688,23 @@ def summarize_meeting(meeting: Dict[str, Any], cache_dir: Optional[Path] = None)
     best_briefing: Dict[str, Any] = {}
     best_errors: List[str] = []
     best_method: Optional[str] = None
+    best_score = (-1, -1, -1)
     for attempt in (1, 2):
         try:
             raw, method = _call_openai(source, SUMMARIZER_MODEL, "; ".join(last_errors))
-            briefing, last_errors = _validate_briefing(raw, source)
+            briefing, validation_errors = _validate_briefing(raw, source)
+            coverage_errors = _coverage_warnings(briefing, source)
+            last_errors = validation_errors + coverage_errors
             item_count = len(briefing.get("items") or [])
-            best_count = len(best_briefing.get("items") or [])
-            if item_count > best_count or (
-                item_count == best_count and item_count > 0 and len(last_errors) < len(best_errors)
-            ):
+            covered_amounts = len(_coverage_amounts(source)) - len(
+                re.findall(r"\$[\d,.]+", " ".join(coverage_errors))
+            )
+            candidate_score = (covered_amounts, item_count, -len(validation_errors))
+            if item_count > 0 and candidate_score > best_score:
                 best_briefing = briefing
                 best_errors = list(last_errors)
                 best_method = method
+                best_score = candidate_score
             if not last_errors:
                 cache_file.parent.mkdir(parents=True, exist_ok=True)
                 cache_file.write_text(
