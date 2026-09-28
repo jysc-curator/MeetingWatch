@@ -15,7 +15,7 @@ plus a 60-day history archive at
 - **`.github/workflows/test.yml`** — Runs the Python test suite on pushes and pull requests.
 
 ## Quick start
-1. In **Settings → Secrets and variables → Actions**, configure `OPENAI_API_KEY` for editorial briefings. If generation or validation fails, MeetingWatch withholds the briefing rather than publishing an unverified fallback.
+1. In **Settings → Secrets and variables → Actions**, configure `OPENAI_API_KEY` for editorial briefings. MeetingWatch publishes only stories that pass source validation and withholds the briefing when no trustworthy story survives.
 2. Enable GitHub Actions and configure Pages to deploy with **GitHub Actions**.
 3. To run locally from the repository root:
 
@@ -42,11 +42,13 @@ Each published briefing contains at most eight ranked stories. Every story has:
 - a compact verbatim evidence excerpt and agenda page/item locator; and
 - public provenance recording the model, prompt version, source hash, and validation status.
 
-The model returns strict JSON. MeetingWatch then verifies evidence excerpts against
-the extracted agenda, rejects unsupported numeric claims, checks that the largest
-material dollar amounts were not omitted, and retries once with the validation
-errors. A second failure is displayed as **Briefing withheld**. Scrapers do not call
-the model, and unchanged agendas reuse a source-hash cache.
+The model returns strict JSON. MeetingWatch then verifies each story independently
+against one contiguous agenda passage, rejects unsupported numeric claims, and
+checks that material dollar amounts in that selected passage were preserved. It
+retries once with validation errors. If a later draft still mixes agenda actions or
+contains an unsupported story, that story is discarded while other source-grounded
+stories remain publishable; the entire briefing is withheld only when none survive.
+Scrapers do not call the model, and unchanged agendas reuse a source-hash cache.
    
 ## Ranking & Filtering Controls (Issue #3)
 

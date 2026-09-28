@@ -27,7 +27,7 @@ MAX_BULLETS = int(os.getenv("PDF_SUMMARY_MAX_BULLETS", "8"))
 DEFAULT_MAX_CHARS = int(os.getenv("PDF_SUMMARY_MAX_CHARS", "90000"))
 SUMMARIZER_MODEL = os.getenv("SUMMARIZER_MODEL", "gpt-5-mini")
 DEBUG = os.getenv("PDF_SUMMARY_DEBUG", "0") == "1"
-PROMPT_VERSION = "editorial-briefing-v4"
+PROMPT_VERSION = "editorial-briefing-v5"
 MATERIAL_AMOUNT_THRESHOLD = int(os.getenv("EDITORIAL_MATERIAL_AMOUNT_USD", "100000"))
 MAX_MATERIAL_AMOUNTS = int(os.getenv("EDITORIAL_MAX_MATERIAL_AMOUNTS", "10"))
 UA = {"User-Agent": "MeetingWatch/2.0 (+https://github.com/jysc-curator/MeetingWatch)"}
@@ -244,8 +244,10 @@ opening the PDF.
 
 Editorial rules:
 - Select at most {MAX_BULLETS} genuinely consequential stories and rank them.
-- Put no more than three items at priority "top". Group related procurements or
-  bond actions when that improves clarity.
+- Put no more than three items at priority "top".
+- Each story must describe one agenda action supported by one contiguous source
+  passage. Do not combine separate agenda item identifiers or non-contiguous
+  actions into one story, even when they concern the same project or fund.
 - State the proposed action precisely. Agendas describe proposals, not outcomes;
   never say an item passed unless the source explicitly reports a prior vote.
 - Preserve every material dollar amount, tax/rate/fee change, vote, acreage,
@@ -342,6 +344,17 @@ def _editorial_words(text: str) -> set[str]:
     }
 
 
+def _source_paragraphs(region: str) -> List[str]:
+    """Split source text at blank lines and common agenda-item identifiers."""
+    parts: List[str] = []
+    item_boundary = re.compile(
+        r"\n\s*(?=(?:[A-Z]{1,3}\d{1,3}\b|\d{1,3}\.[A-Z](?:\.|\s)))"
+    )
+    for paragraph in re.split(r"\n\s*\n", region):
+        parts.extend(item_boundary.split(paragraph))
+    return [_normalize_ws(part) for part in parts if _normalize_ws(part)]
+
+
 def _recover_evidence(item: Dict[str, Any], source: str) -> Tuple[Optional[str], Optional[int]]:
     """Select a verbatim source block when model-supplied evidence is near-verbatim."""
     query = " ".join(
@@ -356,19 +369,30 @@ def _recover_evidence(item: Dict[str, Any], source: str) -> Tuple[Optional[str],
     query_words = _editorial_words(query)
     if not query_words:
         return None, None
-    item_ids = re.findall(r"\b\d+(?:\.[A-Za-z0-9]+)+\b", str(item.get("agenda_item") or ""))
+    item_ids = re.findall(
+        r"\b(?:[A-Z]{1,3}\d{1,3}|\d+(?:\.[A-Za-z0-9]+)+)\b",
+        str(item.get("agenda_item") or ""),
+        re.I,
+    )
     query_numbers = list(dict.fromkeys(_NUMBER_RE.findall(query)))
     candidates: List[Tuple[float, str, int]] = []
 
-    for page_match in re.finditer(r"\[PAGE (\d+)\]\s*(.*?)(?=\[PAGE \d+\]|\Z)", source, re.S):
-        page = int(page_match.group(1))
-        paragraphs = [
-            _normalize_ws(part)
-            for part in re.split(r"\n\s*\n", page_match.group(2))
-            if _normalize_ws(part)
-        ]
+    page_matches = list(
+        re.finditer(r"\[PAGE (\d+)\]\s*(.*?)(?=\[PAGE \d+\]|\Z)", source, re.S)
+    )
+    regions: List[Tuple[Optional[int], str, int]] = []
+    if page_matches:
+        regions = [(int(match.group(1)), match.group(2), 5) for match in page_matches]
+    else:
+        # CivicClerk and similar providers expose useful plain text without page
+        # markers. Keep recovery to one paragraph there so separate agenda actions
+        # can never be silently merged into a single evidence block.
+        regions = [(None, source.removeprefix("[SOURCE TEXT]"), 1)]
+
+    for page, region, max_width in regions:
+        paragraphs = _source_paragraphs(region)
         for start in range(len(paragraphs)):
-            for width in range(1, min(6, len(paragraphs) - start + 1)):
+            for width in range(1, min(max_width + 1, len(paragraphs) - start + 1)):
                 block = " ".join(paragraphs[start : start + width])
                 if len(block) > 3000:
                     break
@@ -379,15 +403,30 @@ def _recover_evidence(item: Dict[str, Any], source: str) -> Tuple[Optional[str],
                 overlap = shared / max(1, len(query_words))
                 id_hits = sum(1 for item_id in item_ids if _evidence_key(item_id) in _evidence_key(block))
                 number_hits = sum(1 for number in query_numbers if _numeric_token_supported(number, block))
-                score = overlap + (id_hits * 0.9) + (number_hits * 0.12)
-                candidates.append((score, block, page))
+                extra_amounts = sum(
+                    1 for amount in _material_amounts(block)
+                    if not _numeric_token_supported(amount, query)
+                )
+                score = (
+                    overlap + (id_hits * 0.9) + (number_hits * 0.12)
+                    - ((width - 1) * 0.18) - (extra_amounts * 0.12)
+                )
+                candidates.append((score, block, page or 0))
 
     if not candidates:
         return None, None
     score, block, page = max(candidates, key=lambda candidate: candidate[0])
     if score < 0.28:
         return None, None
-    return block, page
+    return block, page or None
+
+
+def _fallback_overview(items: List[Dict[str, Any]]) -> str:
+    """Build a safe overview only from stories that passed source validation."""
+    headlines = [str(item.get("headline") or "").rstrip(" .") for item in items[:3]]
+    if len(headlines) == 1:
+        return f"The agenda's leading consequential item is {headlines[0]}."
+    return "The agenda's leading consequential items are " + "; ".join(headlines[:-1]) + f"; and {headlines[-1]}."
 
 
 def _page_for_excerpt(source: str, excerpt: str) -> Optional[int]:
@@ -458,23 +497,32 @@ def _validate_briefing(raw: Dict[str, Any], source: str) -> Tuple[Dict[str, Any]
         )
         unsupported = [
             token for token in _NUMBER_RE.findall(generated_claims)
-            if not _numeric_token_supported(token, source)
+            if not _numeric_token_supported(
+                token,
+                item["evidence"] if "$" in token else source,
+            )
         ]
         if unsupported:
             errors.append(f"unsupported numeric facts in {item['headline']}: {', '.join(unsupported)}")
+            continue
+        missing_amounts = [
+            amount for amount in _material_amounts(item["evidence"])
+            if _normal_money(amount) not in _normal_money(generated_claims)
+        ]
+        if missing_amounts:
+            errors.append(
+                f"material amounts omitted from {item['headline']}: " + ", ".join(missing_amounts)
+            )
             continue
         items.append(item)
 
     items = items[:MAX_BULLETS]
     if not items:
         errors.append("briefing contains no source-validated editorial items")
-    rendered = json.dumps({"overview": overview, "items": items}, ensure_ascii=False)
-    missing_amounts = [
-        amount for amount in _material_amounts(source)
-        if _normal_money(amount) not in _normal_money(rendered)
-    ]
-    if missing_amounts:
-        errors.append("material amounts omitted: " + ", ".join(missing_amounts))
+    # If any draft content was rejected, do not retain a model-written overview
+    # that may refer to it. Rebuild the overview exclusively from accepted items.
+    if items and errors:
+        overview = _fallback_overview(items)
     top_seen = 0
     for item in items:
         if item["priority"] == "top":
@@ -506,13 +554,6 @@ def _call_openai(source: str, model: str, correction: str = "") -> Tuple[Dict[st
     request_text = (
         "Create the editorial briefing from the agenda below.\n"
         + (f"A prior draft failed validation. Correct these issues: {correction}\n" if correction else "")
-        + (
-            "The final briefing MUST explicitly cover these material amounts, grouping related actions when useful: "
-            + ", ".join(_material_amounts(source))
-            + ".\n"
-            if _material_amounts(source)
-            else ""
-        )
         + "\nAGENDA SOURCE BEGIN\n" + source[:DEFAULT_MAX_CHARS] + "\nAGENDA SOURCE END"
     )
     response = client.responses.create(
@@ -586,8 +627,14 @@ def summarize_meeting(meeting: Dict[str, Any], cache_dir: Optional[Path] = None)
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
             briefing, validation_errors = _validate_briefing(cached["briefing"], source)
             if not validation_errors:
+                cached_warnings = [
+                    _normalize_ws(value)
+                    for value in cached.get("validation_warnings") or []
+                    if _normalize_ws(value)
+                ]
                 return SummaryResult(
-                    True, "verified", "", briefing, used_url, used_kind, len(source),
+                    True, "verified", "; ".join(cached_warnings), briefing,
+                    used_url, used_kind, len(source),
                     cached.get("model") or SUMMARIZER_MODEL, "cache", source_hash, 0,
                 )
         except Exception as exc:
@@ -603,10 +650,21 @@ def summarize_meeting(meeting: Dict[str, Any], cache_dir: Optional[Path] = None)
 
     last_errors: List[str] = []
     method: Optional[str] = None
+    best_briefing: Dict[str, Any] = {}
+    best_errors: List[str] = []
+    best_method: Optional[str] = None
     for attempt in (1, 2):
         try:
             raw, method = _call_openai(source, SUMMARIZER_MODEL, "; ".join(last_errors))
             briefing, last_errors = _validate_briefing(raw, source)
+            item_count = len(briefing.get("items") or [])
+            best_count = len(best_briefing.get("items") or [])
+            if item_count > best_count or (
+                item_count == best_count and item_count > 0 and len(last_errors) < len(best_errors)
+            ):
+                best_briefing = briefing
+                best_errors = list(last_errors)
+                best_method = method
             if not last_errors:
                 cache_file.parent.mkdir(parents=True, exist_ok=True)
                 cache_file.write_text(
@@ -616,6 +674,7 @@ def summarize_meeting(meeting: Dict[str, Any], cache_dir: Optional[Path] = None)
                             "model": SUMMARIZER_MODEL,
                             "source_hash": source_hash,
                             "briefing": briefing,
+                            "validation_warnings": [],
                         },
                         ensure_ascii=False,
                         indent=2,
@@ -632,6 +691,31 @@ def summarize_meeting(meeting: Dict[str, Any], cache_dir: Optional[Path] = None)
             last_errors = [f"model request failed: {exc!r}"]
             if DEBUG:
                 _log(last_errors[0])
+
+    # Validation is item-scoped: rejected stories are never published, but one
+    # bad synthesis must not suppress the other source-grounded stories from the
+    # same meeting. The safe overview was rebuilt from this accepted subset.
+    if best_briefing.get("items"):
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "prompt_version": PROMPT_VERSION,
+                    "model": SUMMARIZER_MODEL,
+                    "source_hash": source_hash,
+                    "briefing": best_briefing,
+                    "validation_warnings": best_errors,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        reason = "published source-validated subset; discarded draft content: " + "; ".join(best_errors)
+        return SummaryResult(
+            True, "verified", reason, best_briefing, used_url, used_kind,
+            len(source), SUMMARIZER_MODEL, best_method, source_hash, 2,
+        )
 
     return SummaryResult(
         False, "quality-gate-failed", "; ".join(last_errors), {}, used_url, used_kind,
@@ -655,6 +739,7 @@ def _public_provenance(result: SummaryResult) -> Dict[str, Any]:
         "source_sha256": result.source_hash,
         "generated_at_utc": _utc_now() if result.ok and result.method != "cache" else None,
         "validation": "source-grounded" if result.ok else "not-published",
+        "coverage": "partial" if result.ok and result.reason else ("complete" if result.ok else "none"),
     }
 
 
