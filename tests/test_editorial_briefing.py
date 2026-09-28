@@ -1,3 +1,4 @@
+import scraper.summarize as summarizer
 from scraper.summarize import _material_amounts, _validate_briefing
 
 
@@ -64,14 +65,31 @@ def test_validator_rejects_unverifiable_evidence_and_numbers():
     assert any("unsupported numeric facts" in error or "could not anchor" in error for error in errors)
 
 
-def test_validator_rejects_omitted_material_amounts():
+def test_validator_does_not_require_unselected_agenda_amounts():
     raw = {
         "overview": "Council will consider utility borrowing.",
         "items": [_item()],
         "routine_items": [],
     }
     _, errors = _validate_briefing(raw, SOURCE)
-    assert any("$330,000,000" in error and "$140,000,000" in error for error in errors)
+    assert errors == []
+
+
+def test_validator_rejects_amount_omitted_from_selected_item():
+    raw = {
+        "overview": "Council will consider utility borrowing.",
+        "items": [
+            _item(
+                headline="Utility refunding bond proposal",
+                action="Council will consider the utility refunding bond proposal.",
+                why_it_matters="The proposal would authorize major utility borrowing.",
+                key_facts=[],
+            )
+        ],
+        "routine_items": [],
+    }
+    _, errors = _validate_briefing(raw, SOURCE)
+    assert any("material amounts omitted" in error and "$225,000,000" in error for error in errors)
 
 
 def test_material_amounts_are_ranked_and_deduplicated():
@@ -163,3 +181,85 @@ def test_numeric_validation_handles_hyphenated_singular_acreage():
     }
     _, errors = _validate_briefing(raw, source)
     assert errors == []
+
+
+def test_validator_recovers_evidence_from_plain_text_without_pages():
+    source = """[SOURCE TEXT]
+M8   A Resolution establishing Project CI2621 – Aviation Asset Defense and approving a
+     transfer of $300,000 from Project CIAN18 – Grant Matches Airport
+
+N7   An Ordinance transferring $600,000 for demolition of unsafe structures
+"""
+    raw = {
+        "overview": "Council will consider an airport project transfer.",
+        "items": [
+            {
+                "headline": "$300,000 transfer for Aviation Asset Defense",
+                "action": "Council will consider transferring $300,000 to establish the Aviation Asset Defense project.",
+                "why_it_matters": "The proposal would move airport grant-match money into a new project.",
+                "priority": "top",
+                "category": "money",
+                "agenda_item": "M8",
+                "source_page": None,
+                "key_facts": ["$300,000 transfer"],
+                "evidence": "The agenda proposes an airport project transfer.",
+            }
+        ],
+        "routine_items": [],
+    }
+    briefing, errors = _validate_briefing(raw, source)
+    assert errors == []
+    assert briefing["items"][0]["evidence"].startswith("M8 A Resolution")
+    assert briefing["items"][0]["source_page"] is None
+
+
+def test_summarizer_publishes_valid_subset_when_another_story_fails(monkeypatch, tmp_path):
+    source = """[SOURCE TEXT]
+M8   A Resolution establishing Project CI2621 – Aviation Asset Defense and approving a transfer of $300,000 from Project CIAN18 – Grant Matches Airport
+
+N7   An Ordinance transferring funds in the amount of $600,000.00 for demolition of unsafe structures
+
+N11  An Ordinance transferring $400,000 from the Airport Fund to Project CI2621 – Aviation Asset Defense
+"""
+    valid = {
+        "headline": "$300,000 transfer for Aviation Asset Defense",
+        "action": "Council will consider a $300,000 transfer to establish Project CI2621.",
+        "why_it_matters": "The proposal would redirect airport grant-match funds.",
+        "priority": "top",
+        "category": "money",
+        "agenda_item": "M8",
+        "source_page": None,
+        "key_facts": ["$300,000", "Project CI2621"],
+        "evidence": "M8   A Resolution establishing Project CI2621 – Aviation Asset Defense and approving a transfer of $300,000 from Project CIAN18 – Grant Matches Airport",
+    }
+    combined = {
+        "headline": "Three transfers totaling $1,300,000",
+        "action": "Council will consider three transfers totaling $1,300,000.",
+        "why_it_matters": "The actions would fund airport defense and demolition.",
+        "priority": "top",
+        "category": "money",
+        "agenda_item": "M8, N7, N11",
+        "source_page": None,
+        "key_facts": ["$1,300,000"],
+        "evidence": "Three related transfers are proposed.",
+    }
+    raw = {
+        "overview": "Council will consider three transfers totaling $1,300,000.",
+        "items": [valid, combined],
+        "routine_items": [],
+    }
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(summarizer, "_fetch_text_url", lambda _url: (source, ""))
+    monkeypatch.setattr(summarizer, "_call_openai", lambda *_args, **_kwargs: (raw, "test"))
+
+    result = summarizer.summarize_meeting(
+        {"agenda_text_url": "https://example.test/agenda.txt"},
+        cache_dir=tmp_path,
+    )
+
+    assert result.ok is True
+    assert result.status == "verified"
+    assert len(result.briefing["items"]) == 1
+    assert result.briefing["items"][0]["agenda_item"] == "M8"
+    assert "$1,300,000" not in result.briefing["overview"]
+    assert "discarded draft content" in result.reason
