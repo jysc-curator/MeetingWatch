@@ -97,3 +97,45 @@ def test_failed_briefing_is_withheld_instead_of_falling_back(tmp_path):
     page = (output_dir / "index.html").read_text(encoding="utf-8")
     assert "Briefing withheld" in page
     assert "An unverified legacy claim" not in page
+
+
+def test_agenda_less_official_meeting_is_labeled_as_scheduled(tmp_path):
+    data_dir = _write_data(
+        tmp_path,
+        [
+            {
+                "id": "future",
+                "date": "2099-01-02",
+                "city": "Colorado Springs",
+                "meeting_type": "City Council Work Session",
+                "agenda_briefing_status": "not-published",
+                "agenda_url": None,
+            }
+        ],
+    )
+    output_dir = tmp_path / "_site"
+    build(data_dir, output_dir)
+    page = (output_dir / "index.html").read_text(encoding="utf-8")
+
+    assert "Scheduled · Agenda pending" in page
+    assert "Agenda not yet published; briefing will appear automatically." in page
+
+
+def test_canceled_meeting_does_not_promise_a_future_briefing(tmp_path):
+    data_dir = _write_data(
+        tmp_path,
+        [
+            {
+                "id": "canceled",
+                "date": "2099-01-02",
+                "city": "Colorado Springs",
+                "status": "Canceled",
+                "agenda_briefing_status": "not-published",
+            }
+        ],
+    )
+    output_dir = tmp_path / "_site"
+    build(data_dir, output_dir)
+    page = (output_dir / "index.html").read_text(encoding="utf-8")
+
+    assert "This meeting is marked canceled by the official source." in page

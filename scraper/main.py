@@ -5,6 +5,15 @@ from pathlib import Path
 from .utils import now_mt
 
 RETENTION_DAYS = 60
+SCHEDULE_HORIZON_DAYS = 120
+SOURCE_CITIES = (
+    "Alamosa",
+    "Colorado Springs",
+    "El Paso County",
+    "Pueblo",
+    "Salida",
+    "Trinidad",
+)
 
 
 def _parse_date(date_str: str):
@@ -62,6 +71,98 @@ def _split_active_and_expired(meetings: list[dict], today):
         else:
             active.append(meeting)
     return active, expired
+
+
+def _apply_schedule_horizon(
+    meetings: list[dict], *, today, horizon_days: int = SCHEDULE_HORIZON_DAYS
+) -> list[dict]:
+    """Keep the public upcoming feed useful while honoring source-published dates."""
+    horizon = today.fromordinal(today.toordinal() + horizon_days)
+    return [
+        meeting
+        for meeting in meetings
+        if (mdate := _parse_date(meeting.get("date"))) is not None
+        and today <= mdate <= horizon
+    ]
+
+
+def _source_regression_warnings(
+    *, new_active: list[dict], previous_active: list[dict], today
+) -> list[str]:
+    """Describe suspicious source contractions without inventing replacement meetings."""
+    warnings = []
+    horizon = today.fromordinal(today.toordinal() + SCHEDULE_HORIZON_DAYS)
+    for city in SOURCE_CITIES:
+        fresh_dates = [
+            parsed
+            for meeting in new_active
+            if str(meeting.get("city") or "").strip() == city
+            and (parsed := _parse_date(meeting.get("date"))) is not None
+            and today <= parsed <= horizon
+        ]
+        previous_dates = [
+            parsed
+            for meeting in previous_active
+            if str(meeting.get("city") or "").strip() == city
+            and (parsed := _parse_date(meeting.get("date"))) is not None
+            and today <= parsed <= horizon
+        ]
+
+        if previous_dates and not fresh_dates:
+            warnings.append(
+                f"{city}: fresh scrape returned no upcoming meetings; previous data reached "
+                f"{max(previous_dates).isoformat()}"
+            )
+            continue
+
+        # A schedule may naturally roll forward, but it should not silently lose
+        # already published dates well inside the public 120-day window.
+        if fresh_dates and previous_dates and max(fresh_dates) < max(previous_dates):
+            missing_horizon = max(previous_dates)
+            if missing_horizon >= today.fromordinal(today.toordinal() + 7):
+                warnings.append(
+                    f"{city}: published schedule horizon contracted from "
+                    f"{missing_horizon.isoformat()} to {max(fresh_dates).isoformat()}"
+                )
+    return warnings
+
+
+def _build_source_coverage(
+    *, meetings: list[dict], scrape_status: dict[str, dict], warnings: list[str]
+) -> dict:
+    """Publish a machine-readable audit of each source's observed schedule horizon."""
+    sources = {}
+    for city in SOURCE_CITIES:
+        city_meetings = [
+            meeting
+            for meeting in meetings
+            if str(meeting.get("city") or "").strip() == city
+        ]
+        dates = sorted(
+            parsed.isoformat()
+            for meeting in city_meetings
+            if (parsed := _parse_date(meeting.get("date"))) is not None
+        )
+        agenda_count = sum(bool(meeting.get("agenda_url")) for meeting in city_meetings)
+        status = scrape_status.get(city, {"status": "not-run", "discovered": 0})
+        sources[city] = {
+            "scrape_status": status.get("status", "not-run"),
+            "fresh_records_discovered": int(status.get("discovered") or 0),
+            "published_card_count": len(city_meetings),
+            "agenda_published_count": agenda_count,
+            "agenda_pending_count": len(city_meetings) - agenda_count,
+            "scheduled_from": dates[0] if dates else None,
+            "scheduled_through": dates[-1] if dates else None,
+        }
+    return {
+        "policy": {
+            "basis": "officially-published-dates-only",
+            "horizon_days": SCHEDULE_HORIZON_DAYS,
+            "inferred_recurring_dates": False,
+        },
+        "warnings": warnings,
+        "sources": sources,
+    }
 
 
 def _dedupe_keep_latest(meetings: list[dict]) -> list[dict]:
@@ -130,30 +231,23 @@ def run():
     from .salida_civicclerk import parse_salida
 
     meetings = []
-    try:
-        meetings.extend(parse_legistar())
-    except Exception as e:
-        print("Legistar error:", e)
-    try:
-        meetings.extend(parse_bocc())
-    except Exception as e:
-        print("BOCC error:", e)
-    try:
-        meetings.extend(parse_pueblo())
-    except Exception as e:
-        print("Pueblo error:", e)
-    try:
-        meetings.extend(parse_trinidad())
-    except Exception as e:
-        print("Trinidad error:", e)
-    try:
-        meetings.extend(parse_alamosa())
-    except Exception as e:
-        print("Alamosa error:", e)
-    try:
-        meetings.extend(parse_salida())
-    except Exception as e:
-        print("Salida error:", e)
+    scrape_status: dict[str, dict] = {}
+    scrapers = (
+        ("Colorado Springs", "Legistar", parse_legistar),
+        ("El Paso County", "BOCC", parse_bocc),
+        ("Pueblo", "Pueblo", parse_pueblo),
+        ("Trinidad", "Trinidad", parse_trinidad),
+        ("Alamosa", "Alamosa", parse_alamosa),
+        ("Salida", "Salida", parse_salida),
+    )
+    for city, label, scraper in scrapers:
+        try:
+            discovered = scraper()
+            meetings.extend(discovered)
+            scrape_status[city] = {"status": "ok", "discovered": len(discovered)}
+        except Exception as exc:
+            print(f"{label} error:", exc)
+            scrape_status[city] = {"status": "error", "discovered": 0}
 
     repo_root = Path(__file__).resolve().parents[1]
     data_dir = repo_root / "data"
@@ -172,6 +266,15 @@ def run():
     active_from_new, expired_from_new = _split_active_and_expired(meetings, today_mt)
     _, expired_from_previous = _split_active_and_expired(previous_active, today_mt)
 
+    active_from_new = _apply_schedule_horizon(active_from_new, today=today_mt)
+    coverage_warnings = _source_regression_warnings(
+        new_active=active_from_new,
+        previous_active=previous_active,
+        today=today_mt,
+    )
+    for warning in coverage_warnings:
+        print(f"Source coverage warning: {warning}")
+
     active_from_new = _preserve_upcoming_salida_on_scrape_gaps(
         new_active=active_from_new,
         previous_active=previous_active,
@@ -189,6 +292,11 @@ def run():
     out = {
         "generated_at_utc": generated_at_utc,
         "last_checked_mt": checked_mt.strftime("%Y-%m-%d %H:%M %Z"),
+        "source_coverage": _build_source_coverage(
+            meetings=active_deduped,
+            scrape_status=scrape_status,
+            warnings=coverage_warnings,
+        ),
         "meetings": active_deduped,
     }
 

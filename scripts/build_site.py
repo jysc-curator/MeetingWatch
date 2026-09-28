@@ -38,6 +38,8 @@ def _static_briefing(meeting: Dict[str, Any]) -> str:
     briefing = meeting.get("agenda_briefing") or {}
     items = briefing.get("items") or []
     if not items:
+        if "cancel" in str(meeting.get("status") or "").lower():
+            return '<p class="withheld">This meeting is marked canceled by the official source.</p>'
         status = meeting.get("agenda_briefing_status")
         if status == "not-published":
             return '<p class="empty-note">Agenda not yet published; briefing will appear automatically.</p>'
@@ -86,11 +88,24 @@ def _static_card(meeting: Dict[str, Any]) -> str:
         links.append(f'<a href="{agenda}">Agenda</a>')
     if source:
         links.append(f'<a href="{source}">Official source</a>')
+    canceled = "cancel" in str(meeting.get("status") or "").lower()
+    verified = meeting.get("agenda_briefing_status") == "verified"
+    pending = meeting.get("agenda_briefing_status") == "not-published"
+    if canceled:
+        status_text, status_class = "Canceled", "withheld"
+    elif verified:
+        status_text, status_class = "Evidence-checked", ""
+    elif pending:
+        status_text, status_class = "Scheduled · Agenda pending", "pending"
+    else:
+        status_text, status_class = "Briefing withheld", "withheld"
     return (
         '<article class="meeting-card">'
-        f'<div class="eyebrow">{date}{(" · " + time) if time else ""}</div>'
+        '<div class="meeting-head"><div>'
+        f'<div class="eyebrow">{date}{(" · " + time) if time else ""}</div>'
         f'<h2>{city}</h2><div class="meeting-title">{title}</div>'
-        f'<div class="meeting-links">{" · ".join(links)}</div>'
+        f'<div class="meeting-links">{" · ".join(links)}</div></div>'
+        f'<span class="status-pill {status_class}">{status_text}</span></div>'
         f'{_static_briefing(meeting)}'
         '</article>'
     )
@@ -144,9 +159,9 @@ const [mr,hr]=await Promise.all([fetch('data/meetings.json',{cache:'no-store'}),
 const view=document.querySelector('#view'),city=document.querySelector('#city'),search=document.querySelector('#search'),results=document.querySelector('#results');const known=__KNOWN_CITIES__;
 function dataset(){return view.value==='history'?historyItems:upcoming}function cities(){const selected=city.value,counts={};dataset().forEach(m=>{const c=(m.city||'').trim();if(c)counts[c]=(counts[c]||0)+1});city.innerHTML='<option value="">All jurisdictions</option>';[...new Set([...known,...Object.keys(counts)])].sort().forEach(c=>city.add(new Option(`${c} (${counts[c]||0})`,c)));city.value=[...city.options].some(o=>o.value===selected)?selected:''}
 function locator(item){const bits=[];if(item.agenda_item)bits.push(`Agenda item ${esc(item.agenda_item)}`);if(item.source_page)bits.push(`page ${Number(item.source_page)}`);return bits.join(' · ')}
-function briefing(m){const b=m.agenda_briefing||{},items=Array.isArray(b.items)?b.items:[];if(!items.length){if(m.agenda_briefing_status==='not-published')return'<p class="empty-note">Agenda not yet published; briefing will appear automatically.</p>';if(m.agenda_briefing_status)return'<p class="withheld">Briefing withheld because automated source checks did not pass.</p>';const old=Array.isArray(m.agenda_summary)?m.agenda_summary:[];return old.length?'<ul>'+old.map(x=>`<li>${esc(x)}</li>`).join('')+'</ul>':''}
+function briefing(m){const b=m.agenda_briefing||{},items=Array.isArray(b.items)?b.items:[];if(!items.length){if(/cancel/i.test(m.status||''))return'<p class="withheld">This meeting is marked canceled by the official source.</p>';if(m.agenda_briefing_status==='not-published')return'<p class="empty-note">Agenda not yet published; briefing will appear automatically.</p>';if(m.agenda_briefing_status)return'<p class="withheld">Briefing withheld because automated source checks did not pass.</p>';const old=Array.isArray(m.agenda_summary)?m.agenda_summary:[];return old.length?'<ul>'+old.map(x=>`<li>${esc(x)}</li>`).join('')+'</ul>':''}
 const agenda=safe(m.agenda_view_url||m.agenda_url);const stories=items.map(i=>{const facts=(i.key_facts||[]).map(f=>`<span>${esc(f)}</span>`).join('');const evidence=i.evidence?`<details class="evidence"><summary>Source evidence</summary><blockquote>${esc(i.evidence)}</blockquote><div class="locator">${locator(i)}${agenda?` · <a href="${agenda}" target="_blank" rel="noopener">Official agenda</a>`:''}</div></details>`:'';return`<li class="story ${i.priority==='top'?'top':''}"><div class="story-label">${esc(i.priority||'notable')} · ${esc((i.category||'other').replace('-',' '))}</div><h3>${esc(i.headline)}</h3><p>${esc(i.action)}</p>${i.why_it_matters?`<p class="why"><strong>Why it matters:</strong> ${esc(i.why_it_matters)}</p>`:''}${facts?`<div class="facts">${facts}</div>`:''}${evidence}</li>`}).join('');const routine=(b.routine_items||[]);return`${b.overview?`<p class="overview">${esc(b.overview)}</p>`:''}<ol class="stories">${stories}</ol>${routine.length?`<details class="routine"><summary>Routine items (${routine.length})</summary><ul>${routine.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></details>`:''}`}
-function card(m){const agenda=safe(m.agenda_view_url||m.agenda_url),source=safe(m.source||m.url),verified=m.agenda_briefing_status==='verified',pending=m.agenda_briefing_status==='not-published';const status=verified?'Evidence-checked':pending?'Agenda pending':'Briefing withheld';const links=[agenda?`<a href="${agenda}" target="_blank" rel="noopener">Agenda</a>`:'',source?`<a href="${source}" target="_blank" rel="noopener">Official source</a>`:''].filter(Boolean).join(' · ');return`<article class="meeting-card"><div class="meeting-head"><div><div class="eyebrow">${esc(m.date||'')}${m.start_time_local?' · '+esc(m.start_time_local):''}</div><h2>${esc(m.city||m.city_or_body||'Meeting')}</h2><div class="meeting-title">${esc(m.title||m.meeting_type||'Public meeting')}</div><div class="meeting-links">${links}</div></div><span class="status-pill ${verified?'':pending?'pending':'withheld'}">${status}</span></div>${briefing(m)}</article>`}
+function card(m){const agenda=safe(m.agenda_view_url||m.agenda_url),source=safe(m.source||m.url),verified=m.agenda_briefing_status==='verified',pending=m.agenda_briefing_status==='not-published',canceled=/cancel/i.test(m.status||'');const status=canceled?'Canceled':verified?'Evidence-checked':pending?'Scheduled · Agenda pending':'Briefing withheld';const statusClass=canceled?'withheld':verified?'':pending?'pending':'withheld';const links=[agenda?`<a href="${agenda}" target="_blank" rel="noopener">Agenda</a>`:'',source?`<a href="${source}" target="_blank" rel="noopener">Official source</a>`:''].filter(Boolean).join(' · ');return`<article class="meeting-card"><div class="meeting-head"><div><div class="eyebrow">${esc(m.date||'')}${m.start_time_local?' · '+esc(m.start_time_local):''}</div><h2>${esc(m.city||m.city_or_body||'Meeting')}</h2><div class="meeting-title">${esc(m.title||m.meeting_type||'Public meeting')}</div><div class="meeting-links">${links}</div></div><span class="status-pill ${statusClass}">${status}</span></div>${briefing(m)}</article>`}
 function render(){const c=city.value,q=search.value.trim().toLowerCase();const shown=dataset().filter(m=>(!c||m.city===c)&&(!q||JSON.stringify(m).toLowerCase().includes(q)));results.innerHTML=shown.length?shown.map(card).join(''):'<div class="empty">No meetings match these filters.</div>';const u=new URL(location.href);u.searchParams.set('view',view.value);c?u.searchParams.set('city',c):u.searchParams.delete('city');q?u.searchParams.set('q',q):u.searchParams.delete('q');history.replaceState({},'',u)}
 const u=new URL(location.href);view.value=['upcoming','history'].includes(u.searchParams.get('view'))?u.searchParams.get('view'):'upcoming';cities();city.value=u.searchParams.get('city')||'';search.value=u.searchParams.get('q')||'';view.onchange=()=>{cities();render()};city.onchange=render;search.oninput=render;const stamp=document.querySelector('.run-meta').dataset.runTs,ms=Date.parse(stamp);if(Number.isFinite(ms)){const h=Math.floor((Date.now()-ms)/36e5);document.querySelector('#freshness').textContent=h<1?'· updated within the hour':h<24?`· ${h} hours ago`:`· ${Math.floor(h/24)} days ago`}render()})();
 </script></body></html>'''

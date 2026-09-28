@@ -92,6 +92,8 @@ Expected outputs include:
 - CivicClerk/Diligent portals are JavaScript-heavy. Playwright is included and used only when required.
 - If `OPENAI_API_KEY` is unavailable, meeting metadata still updates but editorial content is explicitly withheld.
 - Times are normalized to **America/Denver**. Both the scraper and frontend enforce current/future-only records in the Upcoming view.
+- Upcoming coverage follows officially published meeting dates for each source, capped at 120 days. MeetingWatch never invents dates from a recurring cadence. Scheduled meetings without agendas are published as **Scheduled · Agenda pending** placeholders and are upgraded in place when an agenda appears.
+- Every run publishes a `source_coverage` audit in `data/meetings.json`, including each jurisdiction's observed schedule horizon, agenda/pending counts, scraper status, and warnings when a previously published horizon disappears or contracts. The Actions run summary surfaces those warnings.
 - A scheduled job always scrapes when its runner starts; delayed GitHub scheduling cannot turn a run into a successful no-op.
 - Deploy validation fails when active data is stale, contains past/invalid dates, overlaps history, or violates retention.
 

@@ -15,6 +15,14 @@ from zoneinfo import ZoneInfo
 
 
 DENVER = ZoneInfo("America/Denver")
+SOURCE_CITIES = (
+    "Alamosa",
+    "Colorado Springs",
+    "El Paso County",
+    "Pueblo",
+    "Salida",
+    "Trinidad",
+)
 
 
 def _load_object(path: Path) -> dict:
@@ -85,6 +93,80 @@ def _validate_editorial(meeting: dict, label: str) -> list[str]:
             errors.append(f"{label}: unverified briefing must not be published")
         if legacy:
             errors.append(f"{label}: unverified legacy summary must be empty")
+    return errors
+
+
+def _validate_source_coverage(payload: dict, *, today_denver: date) -> list[str]:
+    """Validate the source-aware schedule audit when a producer supplies it."""
+    coverage = payload.get("source_coverage")
+    if coverage is None:
+        return []
+    if not isinstance(coverage, dict):
+        return ["meetings.json: source_coverage must be an object"]
+
+    errors: list[str] = []
+    policy = coverage.get("policy") or {}
+    sources = coverage.get("sources")
+    warnings = coverage.get("warnings")
+    try:
+        horizon_days = int(policy.get("horizon_days"))
+    except (TypeError, ValueError):
+        horizon_days = 0
+    if not 1 <= horizon_days <= 366:
+        errors.append("meetings.json: source_coverage policy has invalid horizon_days")
+    if policy.get("basis") != "officially-published-dates-only":
+        errors.append("meetings.json: source_coverage policy must prohibit inferred dates")
+    if policy.get("inferred_recurring_dates") is not False:
+        errors.append("meetings.json: source_coverage policy must set inferred_recurring_dates=false")
+    if not isinstance(warnings, list) or not all(isinstance(item, str) for item in warnings):
+        errors.append("meetings.json: source_coverage warnings must be a string array")
+    if not isinstance(sources, dict):
+        return errors + ["meetings.json: source_coverage sources must be an object"]
+
+    active = payload.get("meetings") or []
+    if horizon_days:
+        horizon = today_denver + timedelta(days=horizon_days)
+        for index, meeting in enumerate(active):
+            meeting_date = _parse_date(meeting.get("date"))
+            if meeting_date and meeting_date > horizon:
+                errors.append(
+                    f"meetings.json: meetings[{index}] exceeds the {horizon_days}-day schedule horizon"
+                )
+
+    for city in SOURCE_CITIES:
+        item = sources.get(city)
+        if not isinstance(item, dict):
+            errors.append(f"meetings.json: source_coverage is missing {city}")
+            continue
+        if item.get("scrape_status") not in {"ok", "error", "not-run"}:
+            errors.append(f"meetings.json: source_coverage has invalid status for {city}")
+
+        city_meetings = [
+            meeting
+            for meeting in active
+            if str(meeting.get("city") or "").strip() == city
+        ]
+        agenda_count = sum(bool(meeting.get("agenda_url")) for meeting in city_meetings)
+        expected = {
+            "published_card_count": len(city_meetings),
+            "agenda_published_count": agenda_count,
+            "agenda_pending_count": len(city_meetings) - agenda_count,
+        }
+        for field, value in expected.items():
+            if item.get(field) != value:
+                errors.append(
+                    f"meetings.json: source_coverage {city} {field} does not match meetings"
+                )
+
+        dates = sorted(
+            parsed.isoformat()
+            for meeting in city_meetings
+            if (parsed := _parse_date(meeting.get("date"))) is not None
+        )
+        if item.get("scheduled_from") != (dates[0] if dates else None):
+            errors.append(f"meetings.json: source_coverage {city} scheduled_from is inconsistent")
+        if item.get("scheduled_through") != (dates[-1] if dates else None):
+            errors.append(f"meetings.json: source_coverage {city} scheduled_through is inconsistent")
     return errors
 
 
@@ -170,6 +252,8 @@ def validate_payloads(
     overlap = active_ids & history_ids
     if overlap:
         errors.append(f"active/history datasets overlap for {len(overlap)} meeting(s)")
+
+    errors.extend(_validate_source_coverage(meetings_payload, today_denver=today_denver))
 
     return errors
 

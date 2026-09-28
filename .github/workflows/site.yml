@@ -82,6 +82,9 @@ jobs:
           python -m scraper.main
           test -d data && ls -la data || (echo "no data dir generated" && exit 1)
 
+      - name: Report official schedule coverage
+        run: python scripts/report_source_coverage.py --input data/meetings.json
+
       - name: Validate generated datasets
         run: python scripts/validate_data.py --max-age-hours 2 --min-active 1
 
