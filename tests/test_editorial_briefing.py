@@ -1,5 +1,10 @@
 import scraper.summarize as summarizer
-from scraper.summarize import _coverage_warnings, _material_amounts, _validate_briefing
+from scraper.summarize import (
+    _coverage_warnings,
+    _material_amounts,
+    _response_schema,
+    _validate_briefing,
+)
 
 
 SOURCE = """[PAGE 6]
@@ -317,3 +322,67 @@ def test_summarizer_retries_to_restore_major_amount_coverage(monkeypatch, tmp_pa
     assert result.attempts == 2
     assert result.reason == ""
     assert len(result.briefing["items"]) == 2
+
+
+def test_retry_requires_an_item_when_a_high_signal_agenda_first_returns_empty(
+    monkeypatch, tmp_path
+):
+    source = """[SOURCE TEXT]
+Unfinished Business / Action Items
+
+12. Ordinance 2026-24 amending the municipal code to authorize two alternate
+    members of the Historic Preservation Commission. Second reading and public hearing
+
+New Business / Action Items
+
+18. Resolution 2026-30 approving a memorandum of understanding regarding
+    regional affordable housing collaboration
+"""
+    empty_draft = {
+        "overview": "No consequential items were identified.",
+        "items": [],
+        "routine_items": [],
+    }
+    valid_draft = {
+        "overview": "Council will consider a municipal-code amendment.",
+        "items": [
+            {
+                "headline": "Historic Preservation Commission alternates",
+                "action": "Council will consider Ordinance 2026-24 authorizing two alternate commission members.",
+                "why_it_matters": "The proposal would change the commission's authorized membership.",
+                "priority": "top",
+                "category": "governance",
+                "agenda_item": "12",
+                "source_page": None,
+                "key_facts": ["Second reading and public hearing", "Two alternate members"],
+                "evidence": "12. Ordinance 2026-24 amending the municipal code to authorize two alternate members of the Historic Preservation Commission. Second reading and public hearing",
+            }
+        ],
+        "routine_items": [],
+    }
+    drafts = iter([empty_draft, valid_draft])
+    require_item_values = []
+
+    def fake_call(_source, _model, _correction="", require_item=False):
+        require_item_values.append(require_item)
+        return next(drafts), "test"
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(summarizer, "_fetch_text_url", lambda _url: (source, ""))
+    monkeypatch.setattr(summarizer, "_call_openai", fake_call)
+
+    result = summarizer.summarize_meeting(
+        {"agenda_text_url": "https://example.test/salida-agenda.txt"},
+        cache_dir=tmp_path,
+    )
+
+    assert require_item_values == [False, True]
+    assert result.ok is True
+    assert result.status == "verified"
+    assert result.attempts == 2
+    assert result.briefing["items"][0]["agenda_item"] == "12"
+
+
+def test_response_schema_only_requires_items_for_high_signal_recovery():
+    assert "minItems" not in _response_schema()["schema"]["properties"]["items"]
+    assert _response_schema(require_item=True)["schema"]["properties"]["items"]["minItems"] == 1

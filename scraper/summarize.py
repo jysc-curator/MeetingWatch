@@ -9,6 +9,7 @@ writes both the structured briefing and legacy bullet fields.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -564,16 +565,29 @@ def _coverage_warnings(briefing: Dict[str, Any], source: str) -> List[str]:
     return ["editorial coverage targets omitted: " + ", ".join(missing)] if missing else []
 
 
-def _response_schema() -> Dict[str, Any]:
+def _has_editorial_candidates(source: str) -> bool:
+    """Return whether the source plainly contains a consequential agenda action."""
+    return any(pattern.search(source) for pattern in _HIGH_SIGNAL_PATTERNS)
+
+
+def _response_schema(require_item: bool = False) -> Dict[str, Any]:
+    schema = copy.deepcopy(BRIEFING_SCHEMA)
+    if require_item:
+        schema["properties"]["items"]["minItems"] = 1
     return {
         "type": "json_schema",
         "name": "meeting_editorial_briefing",
         "strict": True,
-        "schema": BRIEFING_SCHEMA,
+        "schema": schema,
     }
 
 
-def _call_openai(source: str, model: str, correction: str = "") -> Tuple[Dict[str, Any], str]:
+def _call_openai(
+    source: str,
+    model: str,
+    correction: str = "",
+    require_item: bool = False,
+) -> Tuple[Dict[str, Any], str]:
     from openai import OpenAI  # type: ignore
 
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=150.0, max_retries=1)
@@ -581,6 +595,14 @@ def _call_openai(source: str, model: str, correction: str = "") -> Tuple[Dict[st
     request_text = (
         "Create the editorial briefing from the agenda below.\n"
         + (f"A prior draft failed validation. Correct these issues: {correction}\n" if correction else "")
+        + (
+            "This agenda contains at least one clearly consequential action. Return at least one "
+            "source-grounded editorial item. A concise ordinance, resolution, grant, contract, "
+            "budget, zoning, hearing, or award title is sufficient source evidence when that is "
+            "all the published agenda provides.\n"
+            if require_item
+            else ""
+        )
         + (
             "Editorial coverage targets: include the agenda actions associated with these major amounts: "
             + ", ".join(coverage_amounts)
@@ -596,7 +618,7 @@ def _call_openai(source: str, model: str, correction: str = "") -> Tuple[Dict[st
         instructions=EDITORIAL_INSTRUCTIONS,
         input=request_text,
         reasoning={"effort": "low"},
-        text={"format": _response_schema(), "verbosity": "low"},
+        text={"format": _response_schema(require_item=require_item), "verbosity": "low"},
         max_output_tokens=12000,
         store=False,
     )
@@ -691,7 +713,17 @@ def summarize_meeting(meeting: Dict[str, Any], cache_dir: Optional[Path] = None)
     best_score = (-1, -1, -1)
     for attempt in (1, 2):
         try:
-            raw, method = _call_openai(source, SUMMARIZER_MODEL, "; ".join(last_errors))
+            require_item = bool(
+                attempt > 1
+                and _has_editorial_candidates(source)
+                and "briefing contains no source-validated editorial items" in last_errors
+            )
+            raw, method = _call_openai(
+                source,
+                SUMMARIZER_MODEL,
+                "; ".join(last_errors),
+                require_item=require_item,
+            )
             briefing, validation_errors = _validate_briefing(raw, source)
             coverage_errors = _coverage_warnings(briefing, source)
             last_errors = validation_errors + coverage_errors
