@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import re
+from datetime import date, datetime, timedelta
 from urllib.parse import urljoin, quote
 
 import requests
@@ -15,7 +16,20 @@ from .utils import make_meeting, summarize_pdf_if_any, MT_TZ
 BASE_PDF_URL = "https://cms2.revize.com/revize/trinidadco/" 
 # The public-facing page where the links are found
 BASE_PAGE_URL = "https://www.trinidad.co.gov/government/agendas___minutes/" 
+PAGE_BASE_URLS = (
+    BASE_PAGE_URL,
+    "https://trinidad.co.gov/government/agendas___minutes/",
+)
 MEETING_TYPE = "City Council Regular Meeting"
+HISTORY_LOOKBACK_DAYS = 60
+PAGE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "Chrome/140.0.0.0 Safari/537.36 MeetingWatch/2.0"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
 # --- Logging ---
 log = logging.getLogger(__name__)
@@ -28,30 +42,50 @@ log.setLevel(logging.INFO)
 
 # --- Scraper ---
 def fetch_year_page(year: int) -> BeautifulSoup | None:
-    """Fetches the agenda page for a given year."""
-    url = f"{BASE_PAGE_URL}{year}.php"
-    try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        return BeautifulSoup(response.text, "html.parser")
-    except requests.RequestException as e:
-        log.error(f"Failed to fetch {url}: {e}")
-        return None
+    """Fetch an agenda year through either official hostname."""
+    errors = []
+    for base_url in PAGE_BASE_URLS:
+        url = f"{base_url}{year}.php"
+        try:
+            response = requests.get(url, timeout=30, headers=PAGE_HEADERS)
+            if response.status_code == 404:
+                log.info(f"Trinidad has not published an agenda page for {year}")
+                return None
+            response.raise_for_status()
+            return BeautifulSoup(response.text, "html.parser")
+        except requests.RequestException as exc:
+            errors.append(f"{url}: {exc}")
 
-def parse_trinidad() -> list[dict]:
+    log.error("Failed to fetch Trinidad agenda page via official hosts: " + "; ".join(errors))
+    return None
+
+
+def parse_trinidad(today: date | None = None) -> list[dict]:
     """
     Scrapes the Trinidad agendas___minutes list page for regular council meetings.
     This replaces the previous calendar-based scraper.
     """
     meetings = []
-    today = datetime.now(MT_TZ).date()
+    today = today or datetime.now(MT_TZ).date()
+    cutoff = today - timedelta(days=HISTORY_LOOKBACK_DAYS)
 
-    for year in [today.year, today.year + 1]:
+    log.info(f"Scraping Trinidad agendas for {today.year}")
+    current_soup = fetch_year_page(today.year)
+    if current_soup is None:
+        raise RuntimeError(f"Trinidad's {today.year} agenda page is unavailable")
+
+    year_pages = [(today.year, current_soup)]
+    optional_years = []
+    if cutoff.year != today.year:
+        optional_years.append(cutoff.year)
+    optional_years.append(today.year + 1)
+    for year in optional_years:
         log.info(f"Scraping Trinidad agendas for {year}")
         soup = fetch_year_page(year)
-        if not soup:
-            continue
+        if soup:
+            year_pages.append((year, soup))
 
+    for year, soup in year_pages:
         # Find all tables that look like meeting containers
         tables = soup.find_all("table", style=lambda s: s and "width: 100%" in s)
 
@@ -61,11 +95,16 @@ def parse_trinidad() -> list[dict]:
             if not info_cell:
                 continue
             
-            info_text = [s.strip() for s in info_cell.get_text(separator="\n").splitlines() if s.strip()]
-            if len(info_text) < 2:
+            info_text = " ".join(info_cell.stripped_strings)
+            info_match = re.match(
+                r"^(?P<date>\d{1,2}/\d{1,2}/\d{2,4})\s+(?P<name>.+)$",
+                info_text,
+            )
+            if not info_match:
                 continue
 
-            date_str, meeting_name = info_text[0], info_text[1]
+            date_str = info_match.group("date")
+            meeting_name = info_match.group("name")
 
             # Filter for regular meetings
             if "regular meeting" not in meeting_name.lower():
@@ -78,8 +117,9 @@ def parse_trinidad() -> list[dict]:
                 log.warning(f"Could not parse date: {date_str}")
                 continue
 
-            # Filter for future meetings
-            if meeting_date < today:
+            # Include recent past meetings so a late post or transient source
+            # failure can still be repaired through the central history archive.
+            if meeting_date < cutoff:
                 continue
 
             # Find agenda link
@@ -115,7 +155,7 @@ def parse_trinidad() -> list[dict]:
             )
             meetings.append(meeting)
 
-    log.info(f"Found {len(meetings)} upcoming regular meetings for Trinidad.")
+    log.info(f"Found {len(meetings)} recent/upcoming regular meetings for Trinidad.")
     return meetings
 
 if __name__ == "__main__":

@@ -97,6 +97,9 @@ jobs:
           python -m scraper.summarize \
             --input data/meetings.json \
             --out data/cache/editorial_briefings
+          python -m scraper.summarize \
+            --input data/history.json \
+            --out data/cache/editorial_briefings
 
       - name: Validate editorial publishing contract
         run: python scripts/validate_data.py --max-age-hours 2 --min-active 1
