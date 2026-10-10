@@ -40,7 +40,7 @@ def test_parser_backfills_recent_meeting_into_central_history(monkeypatch):
     )
 
 
-def test_fetch_uses_non_www_official_fallback_and_browser_headers(monkeypatch):
+def test_fetch_uses_rendering_fallback_after_official_hosts_block_runner(monkeypatch):
     calls = []
 
     class Response:
@@ -54,7 +54,7 @@ def test_fetch_uses_non_www_official_fallback_and_browser_headers(monkeypatch):
 
     def fake_get(url, **kwargs):
         calls.append((url, kwargs))
-        if "www.trinidad.co.gov" in url:
+        if "translate.goog" not in url:
             return Response(403)
         return Response(200, OCTOBER_HTML)
 
@@ -63,9 +63,25 @@ def test_fetch_uses_non_www_official_fallback_and_browser_headers(monkeypatch):
     soup = trinidad.fetch_year_page(2026)
 
     assert soup is not None
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert calls[1][0].startswith("https://trinidad.co.gov/")
+    assert calls[2][0].startswith("https://www-trinidad-co-gov.translate.goog/")
     assert "Mozilla/5.0" in calls[0][1]["headers"]["User-Agent"]
+
+
+def test_translated_agenda_link_is_canonicalized_to_direct_official_pdf():
+    translated = (
+        "https://www-trinidad-co-gov.translate.goog/government/agendas___minutes/"
+        "Document%20Center/Agenda%20%26%20Minutes/Government/2026/"
+        "10.6.26%20Reg%20Meeting%20Agenda.pdf?t=123&_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
+    )
+
+    canonical = trinidad._canonical_agenda_href(translated)
+
+    assert canonical == (
+        "Document Center/Agenda & Minutes/Government/2026/"
+        "10.6.26 Reg Meeting Agenda.pdf?t=123"
+    )
 
 
 def test_current_year_source_failure_is_not_reported_as_zero_meetings(monkeypatch):
