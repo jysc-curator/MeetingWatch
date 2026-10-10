@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import re
 from datetime import date, datetime, timedelta
-from urllib.parse import urljoin, quote
+from urllib.parse import parse_qsl, quote, unquote, urlencode, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -19,6 +19,10 @@ BASE_PAGE_URL = "https://www.trinidad.co.gov/government/agendas___minutes/"
 PAGE_BASE_URLS = (
     BASE_PAGE_URL,
     "https://trinidad.co.gov/government/agendas___minutes/",
+)
+TRANSLATED_PAGE_URL = (
+    "https://www-trinidad-co-gov.translate.goog/government/agendas___minutes/"
+    "{year}.php?_x_tr_sl=auto&_x_tr_tl=en&_x_tr_hl=en"
 )
 MEETING_TYPE = "City Council Regular Meeting"
 HISTORY_LOOKBACK_DAYS = 60
@@ -42,22 +46,45 @@ log.setLevel(logging.INFO)
 
 # --- Scraper ---
 def fetch_year_page(year: int) -> BeautifulSoup | None:
-    """Fetch an agenda year through either official hostname."""
+    """Fetch an agenda year directly, then through a read-only rendering fallback."""
     errors = []
-    for base_url in PAGE_BASE_URLS:
-        url = f"{base_url}{year}.php"
+    urls = [f"{base_url}{year}.php" for base_url in PAGE_BASE_URLS]
+    urls.append(TRANSLATED_PAGE_URL.format(year=year))
+    for url in urls:
         try:
             response = requests.get(url, timeout=30, headers=PAGE_HEADERS)
-            if response.status_code == 404:
+            if response.status_code == 404 and "translate.goog" not in url:
                 log.info(f"Trinidad has not published an agenda page for {year}")
                 return None
             response.raise_for_status()
+            if "translate.goog" in url:
+                log.warning("Using translated rendering fallback for Trinidad's agenda index")
             return BeautifulSoup(response.text, "html.parser")
         except requests.RequestException as exc:
             errors.append(f"{url}: {exc}")
 
     log.error("Failed to fetch Trinidad agenda page via official hosts: " + "; ".join(errors))
     return None
+
+
+def _canonical_agenda_href(href: str) -> str:
+    """Turn links rewritten by the rendering fallback back into official paths."""
+    parsed = urlparse(href)
+    if parsed.hostname != "www-trinidad-co-gov.translate.goog":
+        return href
+
+    marker = "/government/agendas___minutes/"
+    path = unquote(parsed.path)
+    if marker in path:
+        path = path.split(marker, 1)[1]
+    query = urlencode(
+        [
+            (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.startswith("_x_tr_")
+        ]
+    )
+    return path + (f"?{query}" if query else "")
 
 
 def parse_trinidad(today: date | None = None) -> list[dict]:
@@ -127,7 +154,7 @@ def parse_trinidad(today: date | None = None) -> list[dict]:
             if not agenda_link_tag or not agenda_link_tag.has_attr("href"):
                 continue
 
-            href = agenda_link_tag["href"]
+            href = _canonical_agenda_href(agenda_link_tag["href"])
 
             # URL-encode the path part of the href, including any spaces in the filename.
             # The server appears to expect filenames with spaces in them, so we do not sanitize.
