@@ -222,6 +222,43 @@ def _preserve_upcoming_salida_on_scrape_gaps(
     return new_active
 
 
+def _preserve_upcoming_on_scrape_errors(
+    *,
+    new_active: list[dict],
+    previous_active: list[dict],
+    scrape_status: dict[str, dict],
+    today,
+    horizon_days: int = SCHEDULE_HORIZON_DAYS,
+) -> list[dict]:
+    """Carry forward published meetings when their source explicitly failed."""
+    failed_cities = {
+        city.strip().lower()
+        for city, status in scrape_status.items()
+        if status.get("status") == "error"
+    }
+    if not failed_cities:
+        return new_active
+
+    new_keys = {_meeting_key(meeting) for meeting in new_active}
+    horizon = today.fromordinal(today.toordinal() + horizon_days)
+    carried = []
+    for meeting in previous_active:
+        city = str(meeting.get("city") or "").strip().lower()
+        if city not in failed_cities:
+            continue
+        meeting_date = _parse_date(meeting.get("date"))
+        if meeting_date is None or not (today <= meeting_date <= horizon):
+            continue
+        if _meeting_key(meeting) in new_keys:
+            continue
+        preserved = dict(meeting)
+        preserved["stale_from_previous_run"] = True
+        preserved["stale_reason"] = "source scrape failed"
+        carried.append(preserved)
+
+    return new_active + carried
+
+
 def run():
     from .coloradosprings_legistar import parse_legistar
     from .epc_agendasuite import parse_bocc
@@ -274,6 +311,13 @@ def run():
     )
     for warning in coverage_warnings:
         print(f"Source coverage warning: {warning}")
+
+    active_from_new = _preserve_upcoming_on_scrape_errors(
+        new_active=active_from_new,
+        previous_active=previous_active,
+        scrape_status=scrape_status,
+        today=today_mt,
+    )
 
     active_from_new = _preserve_upcoming_salida_on_scrape_gaps(
         new_active=active_from_new,
