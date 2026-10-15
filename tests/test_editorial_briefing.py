@@ -18,6 +18,58 @@ $140,000,000 in taxable bonds.
 """
 
 
+class _TextResponse:
+    def __init__(self, content, status_code=200):
+        self.content = content
+        self.status_code = status_code
+
+
+def test_text_fetch_rejects_empty_success_response(monkeypatch):
+    monkeypatch.setattr(
+        summarizer.requests,
+        "get",
+        lambda *_args, **_kwargs: _TextResponse(b""),
+    )
+
+    source, error = summarizer._fetch_text_url("https://example.test/empty.txt")
+
+    assert source is None
+    assert error == "empty or placeholder response (0 chars)"
+
+
+def test_empty_text_response_falls_back_to_pdf(monkeypatch, tmp_path):
+    valid_draft = {
+        "overview": "Council will consider a major utility bond authorization.",
+        "items": [_item()],
+        "routine_items": [],
+    }
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        summarizer,
+        "_fetch_text_url",
+        lambda _url: (None, "empty or placeholder response (0 chars)"),
+    )
+    monkeypatch.setattr(summarizer, "_fetch_pdf_url", lambda _url: (SOURCE, ""))
+    monkeypatch.setattr(
+        summarizer,
+        "_call_openai",
+        lambda *_args, **_kwargs: (valid_draft, "test"),
+    )
+
+    result = summarizer.summarize_meeting(
+        {
+            "agenda_text_url": "https://example.test/empty.txt",
+            "agenda_url": "https://example.test/agenda.pdf",
+        },
+        cache_dir=tmp_path,
+    )
+
+    assert result.ok is True
+    assert result.status == "verified"
+    assert result.used_kind == "pdf"
+    assert result.used_url == "https://example.test/agenda.pdf"
+
+
 def _item(**overrides):
     item = {
         "headline": "Council weighs $225 million utility bond",

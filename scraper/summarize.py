@@ -77,7 +77,15 @@ def _fetch_text_url(url: str) -> Tuple[Optional[str], str]:
         response = requests.get(url, timeout=60, headers=UA)
         if response.status_code != 200:
             return None, f"HTTP {response.status_code}"
-        return "[SOURCE TEXT]\n" + response.content.decode("utf-8", errors="replace"), ""
+        text = response.content.decode("utf-8", errors="replace").strip()
+        # Some CivicClerk text endpoints return HTTP 200 with an empty body (or
+        # a tiny placeholder) even though the companion PDF is available.  Do
+        # not let our source marker turn that non-document into apparently
+        # valid input; rejecting it here makes summarize_meeting fall back to
+        # the PDF automatically.
+        if len(_normalize_ws(text)) < 40:
+            return None, f"empty or placeholder response ({len(text)} chars)"
+        return "[SOURCE TEXT]\n" + text, ""
     except Exception as exc:
         return None, f"fetch error: {exc!r}"
 
