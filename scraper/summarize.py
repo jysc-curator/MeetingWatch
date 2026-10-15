@@ -857,33 +857,91 @@ def main(argv: Optional[List[str]] = None) -> int:
         city = str(meeting.get("city") or meeting.get("city_or_body") or "").strip()
         meeting_type = str(meeting.get("meeting_type") or title).strip()
         slug = _slugify(f"{date}-{city}-{meeting_type}-{index:03d}")
+        previous_verified = meeting.pop("_previous_verified_editorial", None)
         if meeting.get("agenda_url") or meeting.get("agenda_text_url"):
             agendas += 1
         result = summarize_meeting(meeting, cache_dir=output_dir)
         provenance = _public_provenance(result)
-        meeting["agenda_briefing_status"] = result.status
-        meeting["agenda_briefing_provenance"] = provenance
-        if result.ok:
+        carried_forward = bool(
+            not result.ok
+            and result.status in {"source-unavailable", "generation-unavailable"}
+            and isinstance(previous_verified, dict)
+            and previous_verified.get("agenda_briefing_status") == "verified"
+            and isinstance(previous_verified.get("agenda_briefing"), dict)
+            and previous_verified["agenda_briefing"].get("items")
+            and (previous_verified.get("agenda_briefing_provenance") or {}).get("validation")
+            == "source-grounded"
+        )
+        if carried_forward:
+            prior_briefing = copy.deepcopy(previous_verified["agenda_briefing"])
+            provenance = copy.deepcopy(
+                previous_verified.get("agenda_briefing_provenance") or {}
+            )
+            provenance.update(
+                {
+                    "status": "verified",
+                    "freshness": "carried-forward",
+                    "source_check_status": result.status,
+                    "source_check_reason": result.reason,
+                    "source_checked_at_utc": _utc_now(),
+                }
+            )
+            meeting["agenda_briefing_status"] = "verified"
+            meeting["agenda_briefing_provenance"] = provenance
+            meeting["agenda_briefing"] = prior_briefing
+            meeting["agenda_summary"] = copy.deepcopy(
+                previous_verified.get("agenda_summary")
+                or [item["action"] for item in prior_briefing["items"]]
+            )
+            meeting["agenda_summary_routine"] = copy.deepcopy(
+                previous_verified.get("agenda_summary_routine") or []
+            )
+            meeting["agenda_summary_source"] = previous_verified.get(
+                "agenda_summary_source"
+            )
+            meeting["agenda_summary_chars"] = previous_verified.get(
+                "agenda_summary_chars"
+            )
+            verified += 1
+            audit_status = "verified"
+            audit_reason = (
+                "carried forward previous source-grounded briefing; current source check failed: "
+                + result.reason
+            )
+            audit_items = len(prior_briefing.get("items") or [])
+        elif result.ok:
+            meeting["agenda_briefing_status"] = result.status
+            meeting["agenda_briefing_provenance"] = provenance
             meeting["agenda_briefing"] = result.briefing
             meeting["agenda_summary"] = [item["action"] for item in result.briefing["items"]]
             meeting["agenda_summary_routine"] = result.briefing.get("routine_items") or []
             meeting["agenda_summary_source"] = result.used_kind
             meeting["agenda_summary_chars"] = result.chars
             verified += 1
+            audit_status = result.status
+            audit_reason = result.reason
+            audit_items = len(result.briefing.get("items") or [])
         else:
+            meeting["agenda_briefing_status"] = result.status
+            meeting["agenda_briefing_provenance"] = provenance
             meeting.pop("agenda_briefing", None)
             meeting["agenda_summary"] = []
             meeting["agenda_summary_routine"] = []
+            audit_status = result.status
+            audit_reason = result.reason
+            audit_items = 0
         _write_json(
             output_dir / f"{slug}.meta.json",
             {
-                "title": title, "city": city, "date": date, "ok": result.ok,
-                "status": result.status, "reason": result.reason,
-                "items": len(result.briefing.get("items") or []),
+                "title": title, "city": city, "date": date,
+                "ok": result.ok or carried_forward,
+                "status": audit_status, "reason": audit_reason,
+                "items": audit_items,
                 "attempts": result.attempts, "provenance": provenance,
             },
         )
-        _log(f"{slug}: {result.status} ({len(result.briefing.get('items') or [])} stories)")
+        suffix = ", carried forward" if carried_forward else ""
+        _log(f"{slug}: {audit_status} ({audit_items} stories{suffix})")
 
     payload["editorial_briefing"] = {
         "prompt_version": PROMPT_VERSION,

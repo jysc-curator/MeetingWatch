@@ -416,6 +416,18 @@ def _parse_calendar_fallback(today_date, end_date=None, *, html_pages=None) -> L
 
 def _merge_duplicate_meetings(meetings: List[Dict]) -> List[Dict]:
     """Merge near-duplicate CS meetings, preferring richer agenda-bearing records."""
+    def agenda_rank(url: Optional[str]) -> int:
+        value = str(url or "").lower()
+        if not value:
+            return 0
+        # Meeting-ID links survive agenda renames and post-meeting file moves;
+        # legacy legistar2 filenames can disappear while this link stays live.
+        if "coloradosprings.legistar.com/view.ashx" in value:
+            return 3
+        if "legistar2.granicus.com" in value:
+            return 1
+        return 2
+
     merged: Dict[tuple, Dict] = {}
     for m in meetings:
         key = (
@@ -429,7 +441,7 @@ def _merge_duplicate_meetings(meetings: List[Dict]) -> List[Dict]:
             continue
 
         cur = merged[key]
-        if (not cur.get("agenda_url")) and m.get("agenda_url"):
+        if agenda_rank(m.get("agenda_url")) > agenda_rank(cur.get("agenda_url")):
             cur["agenda_url"] = m.get("agenda_url")
         if (not cur.get("agenda_summary")) and m.get("agenda_summary"):
             cur["agenda_summary"] = m.get("agenda_summary")

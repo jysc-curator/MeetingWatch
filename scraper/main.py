@@ -1,3 +1,4 @@
+import copy
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -172,6 +173,50 @@ def _dedupe_keep_latest(meetings: list[dict]) -> list[dict]:
     return list(deduped.values())
 
 
+def _briefing_identity(meeting: dict) -> tuple[str, ...]:
+    meeting_id = str(meeting.get("id") or "").strip()
+    if meeting_id:
+        return ("id", meeting_id)
+    return tuple(
+        str(meeting.get(key) or "").strip().lower()
+        for key in ("city", "meeting_type", "date", "start_time_local")
+    )
+
+
+def _attach_previous_verified_editorial(
+    new_active: list[dict], previous_active: list[dict]
+) -> list[dict]:
+    """Make a prior verified briefing available for transient-source recovery."""
+    previous = {}
+    for meeting in previous_active:
+        briefing = meeting.get("agenda_briefing")
+        if (
+            meeting.get("agenda_briefing_status") == "verified"
+            and isinstance(briefing, dict)
+            and briefing.get("items")
+        ):
+            previous[_briefing_identity(meeting)] = meeting
+
+    fields = (
+        "agenda_briefing_status",
+        "agenda_briefing_provenance",
+        "agenda_briefing",
+        "agenda_summary",
+        "agenda_summary_routine",
+        "agenda_summary_source",
+        "agenda_summary_chars",
+    )
+    for meeting in new_active:
+        if "cancel" in str(meeting.get("status") or "").lower():
+            continue
+        prior = previous.get(_briefing_identity(meeting))
+        if prior:
+            meeting["_previous_verified_editorial"] = {
+                field: copy.deepcopy(prior.get(field)) for field in fields
+            }
+    return new_active
+
+
 def _apply_retention(meetings: list[dict], cutoff, today):
     kept = []
     for meeting in meetings:
@@ -331,6 +376,9 @@ def run():
     history_kept.sort(key=lambda m: (str(m.get("date") or ""), str(m.get("city") or ""), str(m.get("meeting_type") or "")), reverse=True)
 
     active_deduped = _dedupe_keep_latest(active_from_new)
+    active_deduped = _attach_previous_verified_editorial(
+        active_deduped, previous_active
+    )
     active_deduped.sort(key=lambda m: (str(m.get("date") or ""), str(m.get("city") or ""), str(m.get("meeting_type") or "")))
 
     out = {

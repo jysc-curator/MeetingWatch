@@ -121,6 +121,45 @@ def test_agenda_less_official_meeting_is_labeled_as_scheduled(tmp_path):
     assert "Agenda not yet published; briefing will appear automatically." in page
 
 
+def test_carried_forward_briefing_is_published_with_freshness_notice(tmp_path):
+    data_dir = _write_data(
+        tmp_path,
+        [
+            {
+                "id": "future",
+                "date": "2099-01-02",
+                "city": "Colorado Springs",
+                "agenda_briefing_status": "verified",
+                "agenda_briefing_provenance": {
+                    "validation": "source-grounded",
+                    "freshness": "carried-forward",
+                },
+                "agenda_briefing": {
+                    "overview": "Council will discuss the budget.",
+                    "items": [
+                        {
+                            "headline": "Budget work session",
+                            "action": "Council will discuss the budget.",
+                            "why_it_matters": "The discussion shapes spending priorities.",
+                            "priority": "top",
+                            "category": "money",
+                            "evidence": "City Council 2027 Budget Work Session",
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+    output_dir = tmp_path / "_site"
+
+    build(data_dir, output_dir)
+
+    page = (output_dir / "index.html").read_text(encoding="utf-8")
+    assert "Previously evidence-checked" in page
+    assert "Showing the last evidence-checked briefing" in page
+    assert "Budget work session" in page
+
+
 def test_canceled_meeting_does_not_promise_a_future_briefing(tmp_path):
     data_dir = _write_data(
         tmp_path,
