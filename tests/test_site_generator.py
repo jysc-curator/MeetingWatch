@@ -1,4 +1,6 @@
 import json
+import re
+import subprocess
 from pathlib import Path
 
 from scripts.build_site import build
@@ -38,6 +40,29 @@ def test_generated_homepage_hides_past_static_records_and_uses_data_timestamp(tm
     assert "Past City" not in page
     assert 'data-run-ts="2099-01-01T12:00:00Z"' in page
     assert "const upcoming=all.filter" in page
+
+
+def test_generated_browser_script_has_valid_javascript_syntax(tmp_path):
+    data_dir = _write_data(
+        tmp_path,
+        [{"id": "future", "date": "2099-01-02", "city": "Future City"}],
+    )
+    output_dir = tmp_path / "_site"
+    build(data_dir, output_dir)
+    page = (output_dir / "index.html").read_text(encoding="utf-8")
+    script_match = re.search(r"<script>(.*?)</script>", page, re.DOTALL)
+    assert script_match is not None
+    script_path = tmp_path / "generated-site.js"
+    script_path.write_text(script_match.group(1), encoding="utf-8")
+
+    checked = subprocess.run(
+        ["node", "--check", str(script_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert checked.returncode == 0, checked.stderr
 
 
 def test_structured_briefing_renders_evidence_and_locator(tmp_path):
