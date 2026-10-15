@@ -122,6 +122,46 @@ def test_validator_rejects_unverifiable_evidence_and_numbers():
     assert any("unsupported numeric facts" in error or "could not anchor" in error for error in errors)
 
 
+def test_validator_replaces_verbatim_but_unrelated_evidence():
+    source = """[PAGE 1]
+City Council Work Session
+
+448 E 1st Street, Room 190
+October 19, 2026 at 6:00 PM
+
+Discussion Items
+
+1.
+
+2027 Preliminary Budget Discussion Continued
+
+Adjourn
+"""
+    raw = {
+        "overview": "Council will continue discussion of the 2027 preliminary budget.",
+        "items": [
+            {
+                "headline": "Continued discussion of the 2027 Preliminary Budget",
+                "action": "Hold continued discussion of the 2027 Preliminary Budget.",
+                "why_it_matters": "The discussion will shape budget priorities before adoption.",
+                "priority": "top",
+                "category": "money",
+                "agenda_item": "1",
+                "source_page": 1,
+                "key_facts": ["2027 Preliminary Budget Discussion Continued"],
+                "evidence": "City Council Work Session 448 E 1st Street, Room 190 October 19, 2026 at 6:00 PM",
+            }
+        ],
+        "routine_items": ["Adjourn"],
+    }
+
+    briefing, errors = _validate_briefing(raw, source)
+
+    assert errors == []
+    assert briefing["items"][0]["evidence"] == "2027 Preliminary Budget Discussion Continued"
+    assert briefing["items"][0]["source_page"] == 1
+
+
 def test_validator_does_not_require_unselected_agenda_amounts():
     raw = {
         "overview": "Council will consider utility borrowing.",
