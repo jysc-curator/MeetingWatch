@@ -359,6 +359,22 @@ def _editorial_words(text: str) -> set[str]:
     }
 
 
+def _evidence_supports_item(item: Dict[str, Any], evidence: str) -> bool:
+    """Require a verbatim excerpt to actually anchor the proposed action."""
+    # A material amount is itself a strong anchor; later validation requires
+    # the item copy to preserve it, so an unrelated dollar excerpt cannot pass
+    # silently.
+    if _material_amounts(evidence):
+        return True
+    claim_words = _editorial_words(
+        " ".join([item.get("headline") or "", item.get("action") or ""])
+    )
+    if not claim_words:
+        return False
+    shared = claim_words & _editorial_words(evidence)
+    return len(shared) >= min(2, len(claim_words))
+
+
 def _source_paragraphs(region: str) -> List[str]:
     """Split source text at blank lines and common agenda-item identifiers."""
     parts: List[str] = []
@@ -377,8 +393,6 @@ def _recover_evidence(item: Dict[str, Any], source: str) -> Tuple[Optional[str],
             item.get("headline") or "",
             item.get("action") or "",
             item.get("why_it_matters") or "",
-            " ".join(item.get("key_facts") or []),
-            item.get("evidence") or "",
         ]
     )
     query_words = _editorial_words(query)
@@ -494,6 +508,7 @@ def _validate_briefing(raw: Dict[str, Any], source: str) -> Tuple[Dict[str, Any]
             "[page " not in item["evidence"].lower()
             and len(item["evidence"]) <= 3000
             and _evidence_key(item["evidence"]) in source_evidence_key
+            and _evidence_supports_item(item, item["evidence"])
         )
         actual_page = _page_for_excerpt(source, item["evidence"]) if evidence_is_direct else None
         if not evidence_is_direct:
