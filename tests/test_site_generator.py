@@ -185,6 +185,45 @@ def test_carried_forward_briefing_is_published_with_freshness_notice(tmp_path):
     assert "Budget work session" in page
 
 
+def test_source_extracted_briefing_is_labeled_as_degraded_coverage(tmp_path):
+    data_dir = _write_data(
+        tmp_path,
+        [
+            {
+                "id": "future",
+                "date": "2099-01-02",
+                "city": "Pueblo",
+                "agenda_briefing_status": "verified",
+                "agenda_briefing_provenance": {
+                    "validation": "source-grounded",
+                    "method": "deterministic-source-extraction",
+                },
+                "agenda_briefing": {
+                    "overview": "The agenda includes a budget ordinance.",
+                    "items": [
+                        {
+                            "headline": "2027 budget ordinance",
+                            "action": "An Ordinance adopting the 2027 budget.",
+                            "why_it_matters": "The item concerns public spending.",
+                            "priority": "top",
+                            "category": "money",
+                            "evidence": "An Ordinance adopting the 2027 budget.",
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+    output_dir = tmp_path / "_site"
+
+    build(data_dir, output_dir)
+
+    page = (output_dir / "index.html").read_text(encoding="utf-8")
+    assert "Source-extracted" in page
+    assert "AI editorial generation is temporarily unavailable" in page
+    assert "2027 budget ordinance" in page
+
+
 def test_canceled_meeting_does_not_promise_a_future_briefing(tmp_path):
     data_dir = _write_data(
         tmp_path,

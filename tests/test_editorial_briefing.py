@@ -478,3 +478,62 @@ New Business / Action Items
 def test_response_schema_only_requires_items_for_high_signal_recovery():
     assert "minItems" not in _response_schema()["schema"]["properties"]["items"]
     assert _response_schema(require_item=True)["schema"]["properties"]["items"]["minItems"] == 1
+
+
+def test_model_outage_publishes_validated_source_extraction(monkeypatch, tmp_path):
+    source = """[PAGE 1]
+N1 An Ordinance adopting the 2027 budget and appropriating $250,000 for street repairs.
+
+N2 A Resolution approving a grant agreement for the regional housing program.
+"""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(summarizer, "_fetch_pdf_url", lambda _url: (source, ""))
+    monkeypatch.setattr(
+        summarizer,
+        "_call_openai",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("429: no credits remaining")
+        ),
+    )
+
+    result = summarizer.summarize_meeting(
+        {"agenda_url": "https://example.test/agenda.pdf"},
+        cache_dir=tmp_path,
+    )
+
+    assert result.ok is True
+    assert result.status == "verified"
+    assert result.method == "deterministic-source-extraction"
+    assert result.model is None
+    assert len(result.briefing["items"]) == 2
+    assert result.briefing["items"][0]["evidence"] in source
+    assert "$250,000" in result.briefing["items"][0]["action"]
+    assert "AI generation unavailable" in result.reason
+
+
+def test_model_outage_without_substantive_source_is_generation_unavailable(
+    monkeypatch, tmp_path
+):
+    source = """[PAGE 1]
+Call to Order
+Roll Call
+Adjourn
+"""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(summarizer, "_fetch_pdf_url", lambda _url: (source, ""))
+    monkeypatch.setattr(
+        summarizer,
+        "_call_openai",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("429: no credits remaining")
+        ),
+    )
+
+    result = summarizer.summarize_meeting(
+        {"agenda_url": "https://example.test/agenda.pdf"},
+        cache_dir=tmp_path,
+    )
+
+    assert result.ok is False
+    assert result.status == "generation-unavailable"
+    assert "source extraction found no consequential agenda actions" in result.reason

@@ -593,6 +593,108 @@ def _has_editorial_candidates(source: str) -> bool:
     return any(pattern.search(source) for pattern in _HIGH_SIGNAL_PATTERNS)
 
 
+_DETERMINISTIC_NOISE_RE = re.compile(
+    r"(?:^|\b)(?:attachments?|minutes?|presenters?|staff report|staff presentation|"
+    r"accessible transcript|tax map|location map)(?:\b|_)|\.(?:pdf|docx?)\b|^\[page \d+\]$",
+    re.I,
+)
+_DETERMINISTIC_ACTION_RE = re.compile(
+    r"^(?:[A-Z]\d+\s+|\d+(?:\.[A-Z])?\.?\s+|[a-z]\.\s+)?"
+    r"(?:an?\s+)?(?:ordinance|resolution|request|map amendment|public hearing|"
+    r"contract|agreement|appropriation|award|second reading)\b",
+    re.I,
+)
+
+
+def _deterministic_category(text: str) -> str:
+    value = text.lower()
+    if re.search(r"\b(budget|appropriat|tax|mill levy|fee|bond|grant|fund|\$)", value):
+        return "money"
+    if re.search(r"\b(rezon|zoning|subdivision|plat|annex|land use|acre)", value):
+        return "land-use"
+    if re.search(r"\b(police|fire|emergency|safety|opioid)", value):
+        return "public-safety"
+    if re.search(r"\b(contract|bid|award|construction|infrastructure|road|sewer|water)", value):
+        return "infrastructure"
+    if re.search(r"\b(litigation|settlement|legal remedies|attorney)", value):
+        return "legal"
+    if re.search(r"\b(ordinance|code|policy|election|master plan)", value):
+        return "policy"
+    if re.search(r"\b(appointment|board|commission|governance)", value):
+        return "governance"
+    return "other"
+
+
+def _deterministic_why(category: str) -> str:
+    return {
+        "money": "The item concerns public revenue, spending, fees, taxes, or another financial commitment.",
+        "land-use": "The item could change how property may be used, divided, or developed.",
+        "public-safety": "The item concerns emergency response, public safety, or community health.",
+        "infrastructure": "The item concerns a public contract, facility, utility, or infrastructure project.",
+        "legal": "The item concerns the government's legal obligations or enforcement authority.",
+        "policy": "The item could change local law, election rules, or public policy.",
+        "governance": "The item concerns public boards, appointments, or governmental administration.",
+        "other": "The item is listed for substantive consideration by the governing body.",
+    }[category]
+
+
+def _deterministic_agenda_item(text: str) -> Optional[str]:
+    match = re.match(r"^((?:[A-Z]\d+|\d+(?:\.[A-Z])?|[a-z])\.?)\s+", text, re.I)
+    return match.group(1).rstrip(".") if match else None
+
+
+def _deterministic_briefing(source: str) -> Tuple[Dict[str, Any], List[str]]:
+    """Build a conservative source-extracted briefing when model access is down."""
+    candidates: List[Tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for index, paragraph in enumerate(_source_paragraphs(source.removeprefix("[SOURCE TEXT]"))):
+        evidence = _normalize_ws(paragraph)
+        key = _evidence_key(evidence)
+        if not 25 <= len(evidence) <= 1800 or key in seen:
+            continue
+        if _DETERMINISTIC_NOISE_RE.search(evidence):
+            continue
+        signals = sum(1 for pattern in _HIGH_SIGNAL_PATTERNS if pattern.search(evidence))
+        if not signals:
+            continue
+        seen.add(key)
+        score = signals * 3
+        score += 4 if _DETERMINISTIC_ACTION_RE.search(evidence) else 0
+        score += 3 if _material_amounts(evidence) else 0
+        score += 2 if re.search(r"\b(public hearing|second reading|rezon|mill levy)\b", evidence, re.I) else 0
+        candidates.append((score, index, evidence))
+
+    selected = sorted(candidates, key=lambda item: (-item[0], item[1]))[:MAX_BULLETS]
+    raw_items: List[Dict[str, Any]] = []
+    for position, (_, _, evidence) in enumerate(selected):
+        headline = evidence
+        if len(headline) > 180:
+            headline = headline[:177].rsplit(" ", 1)[0].rstrip(" ,;:") + "..."
+        category = _deterministic_category(evidence)
+        raw_items.append(
+            {
+                "headline": headline,
+                "action": evidence,
+                "why_it_matters": _deterministic_why(category),
+                "priority": "top" if position < 3 else "notable",
+                "category": category,
+                "agenda_item": _deterministic_agenda_item(evidence),
+                "source_page": _page_for_excerpt(source, evidence),
+                "key_facts": _material_amounts(evidence)[:4],
+                "evidence": evidence,
+            }
+        )
+
+    if not raw_items:
+        return {}, ["source extraction found no consequential agenda actions"]
+    raw = {
+        "overview": _fallback_overview(raw_items),
+        "items": raw_items,
+        "routine_items": [],
+    }
+    return _validate_briefing(raw, source)
+
+
 def _response_schema(require_item: bool = False) -> Dict[str, Any]:
     schema = copy.deepcopy(BRIEFING_SCHEMA)
     if require_item:
@@ -722,9 +824,26 @@ def summarize_meeting(meeting: Dict[str, Any], cache_dir: Optional[Path] = None)
                 _log(f"Ignoring invalid cache entry {cache_file}: {exc!r}")
 
     if not os.getenv("OPENAI_API_KEY"):
+        fallback, fallback_errors = _deterministic_briefing(source)
+        if fallback.get("items"):
+            reason = "AI generation unavailable; published validated source-extracted coverage"
+            if fallback_errors:
+                reason += "; discarded source extracts: " + "; ".join(fallback_errors)
+            return SummaryResult(
+                True,
+                "verified",
+                reason,
+                fallback,
+                used_url,
+                used_kind,
+                len(source),
+                None,
+                "deterministic-source-extraction",
+                source_hash,
+            )
         return SummaryResult(
             False, "generation-unavailable",
-            "OPENAI_API_KEY is not configured; no unverified fallback was published",
+            "OPENAI_API_KEY is not configured; source extraction found no consequential agenda actions",
             {}, used_url, used_kind, len(source), SUMMARIZER_MODEL, None, source_hash,
         )
 
@@ -812,6 +931,39 @@ def summarize_meeting(meeting: Dict[str, Any], cache_dir: Optional[Path] = None)
             len(source), SUMMARIZER_MODEL, best_method, source_hash, 2,
         )
 
+    if last_errors and all(error.startswith("model request failed:") for error in last_errors):
+        fallback, fallback_errors = _deterministic_briefing(source)
+        if fallback.get("items"):
+            reason = "AI generation unavailable; published validated source-extracted coverage"
+            if fallback_errors:
+                reason += "; discarded source extracts: " + "; ".join(fallback_errors)
+            return SummaryResult(
+                True,
+                "verified",
+                reason,
+                fallback,
+                used_url,
+                used_kind,
+                len(source),
+                None,
+                "deterministic-source-extraction",
+                source_hash,
+                2,
+            )
+        return SummaryResult(
+            False,
+            "generation-unavailable",
+            "; ".join(last_errors + fallback_errors),
+            {},
+            used_url,
+            used_kind,
+            len(source),
+            SUMMARIZER_MODEL,
+            None,
+            source_hash,
+            2,
+        )
+
     return SummaryResult(
         False, "quality-gate-failed", "; ".join(last_errors), {}, used_url, used_kind,
         len(source), SUMMARIZER_MODEL, method, source_hash, 2,
@@ -842,6 +994,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Generate evidence-backed editorial agenda briefings.")
     parser.add_argument("--input", required=True, help="Path to meetings.json")
     parser.add_argument("--out", required=True, help="Directory for audit metadata and cache")
+    parser.add_argument("--fail-on-generation-unavailable", action="store_true")
+    parser.add_argument("--fail-on-zero-verified", action="store_true")
     args = parser.parse_args(argv)
     input_path = Path(args.input)
     output_dir = Path(args.out)
@@ -850,6 +1004,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     _log(f"Loaded {len(meetings)} meetings from {input_path}")
     verified = 0
     agendas = 0
+    generation_unavailable = 0
 
     for index, meeting in enumerate(meetings):
         title = str(meeting.get("title") or meeting.get("meeting") or "Meeting").strip()
@@ -861,10 +1016,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         if meeting.get("agenda_url") or meeting.get("agenda_text_url"):
             agendas += 1
         result = summarize_meeting(meeting, cache_dir=output_dir)
+        if result.status == "generation-unavailable":
+            generation_unavailable += 1
         provenance = _public_provenance(result)
         carried_forward = bool(
-            not result.ok
-            and result.status in {"source-unavailable", "generation-unavailable"}
+            (
+                (not result.ok and result.status in {"source-unavailable", "generation-unavailable"})
+                or result.method == "deterministic-source-extraction"
+            )
             and isinstance(previous_verified, dict)
             and previous_verified.get("agenda_briefing_status") == "verified"
             and isinstance(previous_verified.get("agenda_briefing"), dict)
@@ -952,6 +1111,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     }
     _write_json(input_path, payload)
     _log(f"Verified editorial briefings: {verified}/{agendas} published agendas")
+    if args.fail_on_generation_unavailable and generation_unavailable:
+        _log(f"Refusing deployment: {generation_unavailable} agenda(s) had no generation path")
+        return 2
+    if args.fail_on_zero_verified and agendas and not verified:
+        _log("Refusing deployment: agendas were published but zero briefings were verified")
+        return 3
     return 0
 
 

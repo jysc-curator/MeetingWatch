@@ -111,3 +111,49 @@ def test_summarizer_carries_verified_briefing_through_source_outage(
     assert published["agenda_briefing_provenance"]["freshness"] == "carried-forward"
     assert published["agenda_briefing_provenance"]["source_check_status"] == "source-unavailable"
     assert "_previous_verified_editorial" not in published
+
+
+def test_active_dataset_circuit_breaker_rejects_total_generation_outage(
+    monkeypatch, tmp_path
+):
+    input_path = tmp_path / "meetings.json"
+    output_dir = tmp_path / "audit"
+    input_path.write_text(
+        json.dumps(
+            {
+                "meetings": [
+                    _meeting(agenda_url="https://example.test/agenda.pdf")
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        summarizer,
+        "summarize_meeting",
+        lambda *_args, **_kwargs: SummaryResult(
+            False,
+            "generation-unavailable",
+            "model request failed: no credits",
+            {},
+            "https://example.test/agenda.pdf",
+            "pdf",
+            500,
+            "gpt-5-mini",
+            None,
+            "source-hash",
+        ),
+    )
+
+    exit_code = summarizer.main(
+        [
+            "--input",
+            str(input_path),
+            "--out",
+            str(output_dir),
+            "--fail-on-generation-unavailable",
+            "--fail-on-zero-verified",
+        ]
+    )
+
+    assert exit_code == 2
