@@ -142,6 +142,37 @@ def build(data_dir: Path, output_dir: Path) -> Path:
     upcoming = sorted((m for m in current if _is_current(m, today)), key=lambda m: (_meeting_date(m), str(m.get("start_time_local") or "")))
     verified = sum(1 for m in upcoming if m.get("agenda_briefing_status") == "verified")
     agendas = sum(1 for m in upcoming if m.get("agenda_url") or m.get("agenda_text_url"))
+    limited = [
+        meeting
+        for meeting in upcoming
+        if (meeting.get("agenda_briefing_provenance") or {}).get("method")
+        == "deterministic-source-extraction"
+    ]
+    generation_issues = {
+        (meeting.get("agenda_briefing_provenance") or {}).get("generation_issue")
+        for meeting in limited
+    }
+    editorial_notice = ""
+    if limited:
+        if "out-of-credit" in generation_issues:
+            cause = (
+                "The configured OpenAI API account is out of credits, so richer AI editorial "
+                "summaries are temporarily unavailable."
+            )
+            operator_action = (
+                ' <strong>Site operator:</strong> <a href="https://platform.openai.com/settings/organization/billing/" '
+                'target="_blank" rel="noopener">add credits to the API account</a> to restore them.'
+            )
+        else:
+            cause = "AI editorial generation is temporarily unavailable."
+            operator_action = " Full editorial summaries will resume automatically when model access returns."
+        editorial_notice = (
+            '<section class="service-notice" role="status"><strong>Limited editorial mode</strong>'
+            f'<p>{cause} The {len(limited)} affected briefing'
+            f'{"s" if len(limited) != 1 else ""} still include ranked official-agenda actions, '
+            'verbatim evidence, agenda locators, and checked amounts, but less synthesis and '
+            f'local context.{operator_action}</p></section>'
+        )
     generated = str(current_raw.get("generated_at_utc") or "") if isinstance(current_raw, dict) else ""
     checked = str(current_raw.get("last_checked_mt") or generated or "unknown") if isinstance(current_raw, dict) else "unknown"
 
@@ -162,7 +193,7 @@ def build(data_dir: Path, output_dir: Path) -> Path:
 :root{--ink:#172033;--muted:#5b6474;--paper:#f5f2ea;--card:#fff;--line:#d8d5cc;--navy:#153a59;--blue:#0b67a3;--gold:#b56b16;--green:#16734a;--red:#a6382e;--shadow:0 10px 28px rgba(23,32,51,.08)}
 *{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}a{color:var(--blue);text-underline-offset:3px}a:hover{text-decoration-thickness:2px}button,select,input{font:inherit}
 .masthead{background:var(--navy);color:#fff;padding:2.6rem max(1rem,calc((100vw - 1120px)/2));border-bottom:6px solid #d59a3c}.brand{font:800 clamp(2.2rem,6vw,4.2rem)/.95 Georgia,serif;letter-spacing:-.045em}.tagline{max-width:760px;margin:.75rem 0 0;font-size:1.08rem;color:#dbe8f2}.trust{display:flex;flex-wrap:wrap;gap:.55rem;margin-top:1.1rem}.trust span{border:1px solid #ffffff55;border-radius:99px;padding:.26rem .65rem;font-size:.82rem}
-main{max-width:1120px;margin:0 auto;padding:1.5rem 1rem 4rem}.statusbar{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}.stat{background:var(--card);padding:1rem}.stat strong{display:block;font:750 1.55rem/1 Georgia,serif}.stat span{color:var(--muted);font-size:.82rem}.run-meta{color:var(--muted);font-size:.84rem;margin:.7rem .1rem 1.25rem}
+main{max-width:1120px;margin:0 auto;padding:1.5rem 1rem 4rem}.statusbar{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}.stat{background:var(--card);padding:1rem}.stat strong{display:block;font:750 1.55rem/1 Georgia,serif}.stat span{color:var(--muted);font-size:.82rem}.run-meta{color:var(--muted);font-size:.84rem;margin:.7rem .1rem 1.25rem}.service-notice{margin:0 0 1rem;padding:.9rem 1rem;border:1px solid #d7a957;border-left:5px solid var(--gold);border-radius:10px;background:#fff4dd;color:#5f4219;box-shadow:var(--shadow)}.service-notice strong{font:750 1.02rem/1.2 Georgia,serif}.service-notice p{margin:.3rem 0 0;max-width:95ch}
 .controls{display:grid;grid-template-columns:1fr 1fr 2fr;gap:.8rem;background:#ebe7dc;border:1px solid var(--line);padding:.85rem;border-radius:12px;margin-bottom:1rem;position:sticky;top:.5rem;z-index:10;box-shadow:0 8px 24px #17203312}.controls label{font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;font-weight:750;color:var(--muted)}.controls select,.controls input{display:block;width:100%;margin-top:.25rem;padding:.58rem .65rem;border:1px solid #c8c4b9;border-radius:8px;background:white;color:var(--ink)}
 #results,.static-list{display:grid;gap:1rem}.meeting-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:clamp(1rem,3vw,1.6rem);box-shadow:var(--shadow)}.meeting-head{display:grid;grid-template-columns:1fr auto;gap:1rem;border-bottom:1px solid var(--line);padding-bottom:.9rem;margin-bottom:1rem}.eyebrow,.story-label{font-size:.73rem;letter-spacing:.075em;text-transform:uppercase;color:var(--gold);font-weight:800}.meeting-card h2{font:750 clamp(1.4rem,4vw,2rem)/1.05 Georgia,serif;margin:.18rem 0}.meeting-title{font-weight:650;color:var(--muted)}.meeting-links{font-size:.88rem;margin-top:.35rem}.status-pill{align-self:start;border-radius:99px;padding:.3rem .65rem;font-size:.76rem;font-weight:750;background:#e3f3eb;color:var(--green)}.status-pill.pending{background:#f4ead8;color:#80510d}.status-pill.withheld{background:#f8e1df;color:var(--red)}
 .overview{font:600 1.08rem/1.45 Georgia,serif;margin:.2rem 0 1rem;max-width:78ch}.stories{list-style:none;padding:0;margin:0;display:grid;gap:.75rem}.story{border-left:4px solid #aab7c2;background:#f8fafb;padding:.85rem 1rem;border-radius:0 10px 10px 0}.story.top{border-left-color:var(--gold);background:#fffaf1}.story h3{font:750 1.08rem/1.25 Georgia,serif;margin:.15rem 0 .28rem}.story p{margin:.25rem 0;max-width:82ch}.why{color:#384457}.facts{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.55rem}.facts span{font-size:.76rem;font-weight:750;color:#17496b;background:#e6f1f8;border-radius:99px;padding:.22rem .5rem}.evidence{margin-top:.65rem;border-top:1px dashed #c9cfd4;padding-top:.5rem}.evidence summary{cursor:pointer;color:var(--blue);font-size:.82rem;font-weight:700}.evidence blockquote{margin:.55rem 0 .25rem;padding:.55rem .75rem;border-left:3px solid #9aa7b1;color:#46505f;font:italic .88rem/1.45 Georgia,serif}.locator{font-size:.76rem;color:var(--muted)}.empty-note,.withheld{margin:.8rem 0 0;padding:.7rem .85rem;border-radius:8px;background:#f5efe2;color:#77501a}.withheld{background:#f8e8e6;color:#8c3028}.routine{margin-top:.75rem;color:var(--muted);font-size:.88rem}.empty{text-align:center;background:white;border:1px solid var(--line);border-radius:12px;padding:2rem;color:var(--muted)}footer{max-width:1120px;margin:0 auto;padding:0 1rem 2rem;color:var(--muted);font-size:.82rem}
@@ -171,6 +202,7 @@ main{max-width:1120px;margin:0 auto;padding:1.5rem 1rem 4rem}.statusbar{display:
 <header class="masthead"><div class="brand">MeetingWatch</div><p class="tagline">What local government is deciding next—ranked, explained, and tied directly to the official agenda.</p><div class="trust"><span>Evidence-linked</span><span>Material amounts checked</span><span>Twice-daily updates</span></div></header>
 <main><section class="statusbar" aria-label="Coverage summary"><div class="stat"><strong>__UPCOMING__</strong><span>upcoming meetings</span></div><div class="stat"><strong>__AGENDAS__</strong><span>agendas published</span></div><div class="stat"><strong>__VERIFIED__</strong><span>verified briefings</span></div></section>
 <div class="run-meta" data-run-ts="__GENERATED__"><strong>Last checked:</strong> __CHECKED__ <span id="freshness"></span> · <a href="data/meetings.json">Open data</a></div>
+__EDITORIAL_NOTICE__
 <section class="controls" aria-label="Meeting filters"><label>View<select id="view"><option value="upcoming">Upcoming</option><option value="history">Past 60 days</option></select></label><label>Jurisdiction<select id="city"><option value="">All jurisdictions</option></select></label><label>Search<input id="search" type="search" placeholder="Search topics, amounts, places…"></label></section>
 <div id="results"></div><noscript><div class="static-list">__STATIC_CARDS__</div></noscript></main>
 <footer>MeetingWatch briefings are AI-assisted and automatically validated against official agenda text. Items failing source checks are withheld, not guessed.</footer>
@@ -192,6 +224,7 @@ const u=new URL(location.href);view.value=['upcoming','history'].includes(u.sear
         .replace("__VERIFIED__", str(verified))
         .replace("__GENERATED__", html.escape(generated, quote=True))
         .replace("__CHECKED__", html.escape(checked))
+        .replace("__EDITORIAL_NOTICE__", editorial_notice)
         .replace("__STATIC_CARDS__", static_cards)
         .replace("__KNOWN_CITIES__", json.dumps(KNOWN_CITIES))
     )
