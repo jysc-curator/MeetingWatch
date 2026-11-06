@@ -197,6 +197,7 @@ def test_source_extracted_briefing_is_labeled_as_degraded_coverage(tmp_path):
                 "agenda_briefing_provenance": {
                     "validation": "source-grounded",
                     "method": "deterministic-source-extraction",
+                    "generation_issue": "out-of-credit",
                 },
                 "agenda_briefing": {
                     "overview": "The agenda includes a budget ordinance.",
@@ -222,6 +223,54 @@ def test_source_extracted_briefing_is_labeled_as_degraded_coverage(tmp_path):
     assert "Source-extracted" in page
     assert "AI editorial generation is temporarily unavailable" in page
     assert "2027 budget ordinance" in page
+    assert "Limited editorial mode" in page
+    assert "OpenAI API account is out of credits" in page
+    assert "ranked official-agenda actions" in page
+    assert "verbatim evidence" in page
+    assert "less synthesis and local context" in page
+    assert "add credits to the API account" in page
+    assert "https://platform.openai.com/settings/organization/billing/" in page
+
+
+def test_limited_mode_does_not_mislabel_other_model_failures_as_out_of_credit(tmp_path):
+    data_dir = _write_data(
+        tmp_path,
+        [
+            {
+                "id": "future",
+                "date": "2099-01-02",
+                "city": "Pueblo",
+                "agenda_briefing_status": "verified",
+                "agenda_briefing_provenance": {
+                    "validation": "source-grounded",
+                    "method": "deterministic-source-extraction",
+                    "generation_issue": "rate-limited",
+                },
+                "agenda_briefing": {
+                    "overview": "The agenda includes a budget ordinance.",
+                    "items": [
+                        {
+                            "headline": "2027 budget ordinance",
+                            "action": "An Ordinance adopting the 2027 budget.",
+                            "why_it_matters": "The item concerns public spending.",
+                            "priority": "top",
+                            "category": "money",
+                            "evidence": "An Ordinance adopting the 2027 budget.",
+                        }
+                    ],
+                },
+            }
+        ],
+    )
+    output_dir = tmp_path / "_site"
+
+    build(data_dir, output_dir)
+
+    page = (output_dir / "index.html").read_text(encoding="utf-8")
+    assert "Limited editorial mode" in page
+    assert "AI editorial generation is temporarily unavailable" in page
+    assert "out of credits" not in page
+    assert "add credits to the API account" not in page
 
 
 def test_canceled_meeting_does_not_promise_a_future_briefing(tmp_path):

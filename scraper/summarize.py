@@ -766,6 +766,20 @@ class SummaryResult:
     method: Optional[str]
     source_hash: Optional[str]
     attempts: int = 0
+    generation_issue: Optional[str] = None
+
+
+def _generation_issue(errors: List[str]) -> str:
+    text = " ".join(errors).lower()
+    if "no credits remaining" in text or "billing" in text:
+        return "out-of-credit"
+    if "not configured" in text:
+        return "not-configured"
+    if "ratelimit" in text or "rate limit" in text or "429" in text:
+        return "rate-limited"
+    if "authentication" in text or "invalid_api_key" in text or "401" in text:
+        return "authentication"
+    return "model-unavailable"
 
 
 def _cache_path(cache_dir: Path, source_hash: str, model: str) -> Path:
@@ -840,11 +854,13 @@ def summarize_meeting(meeting: Dict[str, Any], cache_dir: Optional[Path] = None)
                 None,
                 "deterministic-source-extraction",
                 source_hash,
+                generation_issue="not-configured",
             )
         return SummaryResult(
             False, "generation-unavailable",
             "OPENAI_API_KEY is not configured; source extraction found no consequential agenda actions",
             {}, used_url, used_kind, len(source), SUMMARIZER_MODEL, None, source_hash,
+            generation_issue="not-configured",
         )
 
     last_errors: List[str] = []
@@ -948,7 +964,8 @@ def summarize_meeting(meeting: Dict[str, Any], cache_dir: Optional[Path] = None)
                 None,
                 "deterministic-source-extraction",
                 source_hash,
-                2,
+                attempts=2,
+                generation_issue=_generation_issue(last_errors),
             )
         return SummaryResult(
             False,
@@ -961,7 +978,8 @@ def summarize_meeting(meeting: Dict[str, Any], cache_dir: Optional[Path] = None)
             SUMMARIZER_MODEL,
             None,
             source_hash,
-            2,
+            attempts=2,
+            generation_issue=_generation_issue(last_errors),
         )
 
     return SummaryResult(
@@ -980,6 +998,7 @@ def _public_provenance(result: SummaryResult) -> Dict[str, Any]:
         "status": result.status,
         "model": result.model,
         "method": result.method,
+        "generation_issue": result.generation_issue,
         "prompt_version": PROMPT_VERSION,
         "source_kind": result.used_kind,
         "source_url": result.used_url,
@@ -1043,6 +1062,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     "source_check_status": result.status,
                     "source_check_reason": result.reason,
                     "source_checked_at_utc": _utc_now(),
+                    "generation_issue": result.generation_issue,
                 }
             )
             meeting["agenda_briefing_status"] = "verified"

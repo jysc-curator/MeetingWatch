@@ -505,6 +505,7 @@ N2 A Resolution approving a grant agreement for the regional housing program.
     assert result.status == "verified"
     assert result.method == "deterministic-source-extraction"
     assert result.model is None
+    assert result.generation_issue == "out-of-credit"
     assert len(result.briefing["items"]) == 2
     assert result.briefing["items"][0]["evidence"] in source
     assert "$250,000" in result.briefing["items"][0]["action"]
@@ -536,4 +537,5 @@ Adjourn
 
     assert result.ok is False
     assert result.status == "generation-unavailable"
+    assert result.generation_issue == "out-of-credit"
     assert "source extraction found no consequential agenda actions" in result.reason
