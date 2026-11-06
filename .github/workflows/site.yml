@@ -96,7 +96,9 @@ jobs:
           mkdir -p data/cache/editorial_briefings
           python -m scraper.summarize \
             --input data/meetings.json \
-            --out data/cache/editorial_briefings
+            --out data/cache/editorial_briefings \
+            --fail-on-generation-unavailable \
+            --fail-on-zero-verified
           python -m scraper.summarize \
             --input data/history.json \
             --out data/cache/editorial_briefings

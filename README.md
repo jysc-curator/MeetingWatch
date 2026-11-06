@@ -15,7 +15,7 @@ plus a 60-day history archive at
 - **`.github/workflows/test.yml`** — Runs the Python test suite on pushes and pull requests.
 
 ## Quick start
-1. In **Settings → Secrets and variables → Actions**, configure `OPENAI_API_KEY` for editorial briefings. MeetingWatch publishes only stories that pass source validation and withholds the briefing when no trustworthy story survives.
+1. In **Settings → Secrets and variables → Actions**, configure `OPENAI_API_KEY` for full editorial briefings. If model access is unavailable, MeetingWatch publishes clearly labeled, source-extracted coverage only when the same evidence and numeric validators pass.
 2. Enable GitHub Actions and configure Pages to deploy with **GitHub Actions**.
 3. To run locally from the repository root:
 
@@ -24,7 +24,7 @@ plus a 60-day history archive at
    pip install -r scraper/requirements.txt pytest
    python -m playwright install chromium
    python -m scraper.main
-   python -m scraper.summarize --input data/meetings.json --out data/cache/agenda_summaries
+   python -m scraper.summarize --input data/meetings.json --out data/cache/agenda_summaries --fail-on-generation-unavailable --fail-on-zero-verified
    python scripts/validate_data.py --max-age-hours 2
    ```
 
@@ -49,6 +49,12 @@ retries once with validation errors. If a later draft still mixes agenda actions
 contains an unsupported story, that story is discarded while other source-grounded
 stories remain publishable; the entire briefing is withheld only when none survive.
 Scrapers do not call the model, and unchanged agendas reuse a source-hash cache.
+When model access fails, the pipeline attempts a conservative source-extraction
+fallback that publishes exact consequential agenda passages with generic,
+category-based context. These cards are labeled **Source-extracted** and are not
+cached, so full model-generated editorial coverage resumes automatically. A
+deployment circuit breaker stops any run where agendas exist but no trustworthy
+briefing can be produced.
    
 ## Ranking & Filtering Controls (Issue #3)
 
@@ -90,7 +96,7 @@ Expected outputs include:
 ## Notes
 - **Respect robots.txt** and rate-limit requests. This starter uses conservative defaults.
 - CivicClerk/Diligent portals are JavaScript-heavy. Playwright is included and used only when required.
-- If `OPENAI_API_KEY` is unavailable, meeting metadata still updates but editorial content is explicitly withheld.
+- If `OPENAI_API_KEY` is unavailable or out of credit, source-extracted coverage is published only when it passes the normal grounding and numeric checks; otherwise the deployment is stopped before it can replace a healthier site.
 - Times are normalized to **America/Denver**. Both the scraper and frontend enforce current/future-only records in the Upcoming view.
 - Upcoming coverage follows officially published meeting dates for each source, capped at 120 days. MeetingWatch never invents dates from a recurring cadence. Scheduled meetings without agendas are published as **Scheduled · Agenda pending** placeholders and are upgraded in place when an agenda appears.
 - Every run publishes a `source_coverage` audit in `data/meetings.json`, including each jurisdiction's observed schedule horizon, agenda/pending counts, scraper status, and warnings when a previously published horizon disappears or contracts. The Actions run summary surfaces those warnings.
